@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<suite name="Failed suite [EcommerceApp Test Suite]" guice-stage="DEVELOPMENT" verbose="0">
+  <listeners>
+    <listener class-name="org.latiffsyed.testUtils.Listeners"/>
+  </listeners>
+  <test thread-count="5" name="Login Negative and Positive Tests(failed)" verbose="0">
+    <classes>
+      <class name="org.latiffsyed.tests.android.LoginFormValidationTest">
+        <methods>
+          <include name="configureAppium"/>
+          <include name="tearDown"/>
+          <include name="FormLogin_ErrorValidationFailedTest"/>
+          <include name="preSetup"/>
+        </methods>
+      </class> <!-- org.latiffsyed.tests.android.LoginFormValidationTest -->
+    </classes>
+  </test> <!-- Login Negative and Positive Tests(failed) -->
+</suite> <!-- Failed suite [EcommerceApp Test Suite] -->
