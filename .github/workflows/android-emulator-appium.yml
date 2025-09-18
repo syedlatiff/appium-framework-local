@@ -40,7 +40,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libpulse0 libglu1-mesa mesa-utils libnss3 \
-            qemu-kvm virt-manager libvirt-daemon-system libvirt-clients bridge-utils
+            net-tools iproute2
 
       - name: Install Appium 3 + UiAutomator2 driver
         run: |
@@ -50,10 +50,6 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
-        with:
-          cmdline-tools-version: "latest"
-          build-tools-version: "30.0.3"
-          platform-version: "android-${{ env.API_LEVEL }}"
 
       - name: Install system image and create AVD
         run: |
@@ -69,24 +65,26 @@ jobs:
             --package "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" \
             --device "pixel_3a" \
             --force
-          
-          # List AVDs to verify
-          avdmanager list avd
 
-      - name: Configure ADB and start emulator
+      - name: Configure ADB environment
         run: |
-          # Set ADB to listen on all interfaces
+          # Set ADB to use TCP instead of USB
+          export ADB_TRACE=all
+          export ADB_LOCAL_TRANSPORT_MAX_PORT=5580
+          
+          # Kill any existing ADB servers
           adb kill-server
-          adb start-server
-          adb devices
+          pkill -f adb
+          sleep 3
           
-          # Get the path to emulator
-          which emulator
-          emulator -version
+          # Start ADB server with specific parameters
+          adb start-server
+          echo "ADB server started"
+          adb devices
 
-      - name: Start emulator with specific port and wait
+      - name: Start emulator with explicit ADB connection
         run: |
-          # Start emulator with specific port and ADB connection
+          # Start emulator with explicit ADB server connection
           emulator -avd ${{ env.AVD_NAME }} \
             -port 5558 \
             -no-window \
@@ -95,127 +93,93 @@ jobs:
             -no-boot-anim \
             -noaudio \
             -verbose \
-            -qemu -adb-name adb > emulator.log 2>&1 &
+            -qemu -tcpdump emulator.pcap \
+            -adb-server tcp:5037 > emulator.log 2>&1 &
           
           EMULATOR_PID=$!
           echo "EMULATOR_PID=$EMULATOR_PID" >> $GITHUB_ENV
-          echo "Emulator started with PID: $EMULATOR_PID on port 5558"
+          echo "Emulator started with PID: $EMULATOR_PID"
 
-      - name: Wait for emulator to boot
+      - name: Wait and force ADB connection
         run: |
-          echo "Waiting for emulator to start..."
-          sleep 30  # Give emulator time to initialize
+          echo "Waiting for emulator to initialize..."
+          sleep 45
           
-          # Restart ADB to ensure clean connection
+          # Force ADB server restart and connection
           adb kill-server
           sleep 5
-          adb start-server
-          sleep 5
           
-          echo "Current ADB devices:"
-          adb devices
+          # Start ADB with specific parameters
+          adb -a -P 5037 nodaemon server start &
+          sleep 10
           
-          # Try to connect to the specific port
+          # Force connect to emulator
+          echo "Attempting to connect to emulator..."
           adb connect 127.0.0.1:5558
-          sleep 5
           
-          echo "Devices after connect attempt:"
-          adb devices
-          
-          # Wait for device with timeout
-          echo "Waiting for device to be ready..."
-          for i in {1..40}; do
+          # Check connection repeatedly
+          for i in {1..20}; do
+            echo "Connection attempt $i/20"
             DEVICES=$(adb devices)
+            echo "Current devices:"
+            echo "$DEVICES"
+            
             if echo "$DEVICES" | grep -q "127.0.0.1:5558.*device"; then
-              echo "Emulator connected and ready!"
+              echo "✅ Emulator connected successfully!"
               break
             fi
-            echo "Attempt $i/40 - Device not ready yet. Current devices:"
-            echo "$DEVICES"
+            
+            # Try reconnecting
+            adb disconnect 127.0.0.1:5558
+            adb connect 127.0.0.1:5558
             sleep 5
           done
           
-          # Final connection check
+          # Final check
           if adb devices | grep -q "127.0.0.1:5558.*device"; then
-            echo "Emulator successfully connected!"
+            echo "✅ Connection established!"
           else
-            echo "Failed to connect to emulator"
-            echo "Emulator log:"
-            cat emulator.log
+            echo "❌ Failed to connect to emulator"
+            echo "Network status:"
+            netstat -tulpn || true
+            echo "Emulator log excerpts:"
+            tail -50 emulator.log
             exit 1
           fi
 
       - name: Wait for boot completion
         run: |
-          echo "Waiting for boot completion..."
-          # Wait for boot completion with timeout
-          for i in {1..50}; do
+          echo "Waiting for emulator to boot..."
+          for i in {1..30}; do
             if adb -s 127.0.0.1:5558 shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "Emulator fully booted!"
+              echo "✅ Emulator fully booted!"
               break
             fi
-            
-            # Alternative check
-            if adb -s 127.0.0.1:5558 shell getprop dev.bootcomplete 2>/dev/null | grep -q "1"; then
-              echo "Emulator boot complete detected!"
-              break
-            fi
-            
-            echo "Boot attempt $i/50 - waiting..."
+            echo "Boot attempt $i/30 - waiting..."
             sleep 5
           done
           
-          # Final boot check
-          if adb -s 127.0.0.1:5558 shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-            echo "Boot successful!"
-            adb -s 127.0.0.1:5558 shell getprop
-          else
-            echo "Boot failed or timed out"
-            exit 1
-          fi
+          adb -s 127.0.0.1:5558 shell getprop
 
       - name: Start Appium server
         run: |
           echo "Starting Appium server..."
-          nohup appium --base-path /wd/hub --allow-cors --log-level info:info > appium.log 2>&1 &
+          nohup appium --base-path /wd/hub --allow-cors --log-level info > appium.log 2>&1 &
           APPIUM_PID=$!
           echo "APPIUM_PID=$APPIUM_PID" >> $GITHUB_ENV
           sleep 15
-          
-          # Verify Appium is running
-          if ps -p $APPIUM_PID > /dev/null; then
-            echo "Appium server started successfully with PID: $APPIUM_PID"
-          else
-            echo "Appium server failed to start"
-            cat appium.log
-            exit 1
-          fi
 
       - name: Run tests
         run: |
           echo "Running TestNG tests..."
-          # Set the device serial for tests if needed
-          export ANDROID_DEVICE=127.0.0.1:5558
           mvn -B -ntp -Dtestng.suiteXmlFile="${{ env.SUITE_XML }}" test
 
-      - name: Stop emulator and Appium
+      - name: Stop services
         if: always()
         run: |
-          echo "Stopping emulator and Appium..."
-          # Stop Appium
-          if [ -n "$APPIUM_PID" ]; then
-            kill $APPIUM_PID 2>/dev/null || true
-          fi
-          
-          # Stop emulator
-          adb -s 127.0.0.1:5558 emu kill || true
-          if [ -n "$EMULATOR_PID" ]; then
-            kill $EMULATOR_PID 2>/dev/null || true
-          fi
-          
-          # Clean up
+          adb emu kill || true
           pkill -f emulator || true
-          pkill -f qemu || true
+          pkill -f adb || true
 
       - name: Upload reports and logs
         if: always()
