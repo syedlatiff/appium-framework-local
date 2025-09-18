@@ -1,5 +1,5 @@
 # .github/workflows/android-emulator-appium.yml
-name: Android UI Tests (Appium + Emulator)
+name: Android UI Tests (Appium + Emulator - Manual)
 
 on:
   push:
@@ -12,11 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      API_LEVEL: "30"
+      API_LEVEL: "29"  # Using 29 instead of 30 for better stability
       TARGET: "google_apis"
-      ARCH: "x86_64"
+      ARCH: "x86"      # Using x86 instead of x86_64
       PROFILE: "pixel_3a"
       SUITE_XML: "testNGSuite/testng_Smoke.xml"
+      AVD_NAME: "test_avd"
 
     steps:
       - name: Checkout
@@ -34,82 +35,167 @@ jobs:
         with:
           node-version: "20"
 
-      # Fix for "libpulse.so.0 not found" and other emulator deps
       - name: Install emulator dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libpulse0 libglu1-mesa mesa-utils libnss3
+            libpulse0 libglu1-mesa mesa-utils libnss3 \
+            qemu-kvm virt-manager libvirt-daemon-system libvirt-clients bridge-utils
 
       - name: Install Appium 3 + UiAutomator2 driver
         run: |
           npm i -g appium@next
-          appium -v
-          appium driver list --installed || true
           appium driver install uiautomator2
-          appium driver list --installed
+          appium -v
 
-      - name: Start Android emulator and run tests
-        uses: reactivecircus/android-emulator-runner@v2
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
         with:
-          api-level: ${{ env.API_LEVEL }}
-          target: ${{ env.TARGET }}
-          arch: ${{ env.ARCH }}
-          profile: ${{ env.PROFILE }}
-          force-avd-creation: true
-          disable-linux-hw-accel: true
-          emulator-boot-timeout: 1200 # Increased timeout
-          disable-animations: true
-          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -no-boot-anim -camera-back none -camera-front none -noaudio
-          script: |
-            # Wait for emulator to be fully ready
-            echo "Waiting for emulator to be fully ready..."
-            adb wait-for-device
-            echo "Device detected, waiting for boot completion..."
-            
-            # Wait for boot completion with retries
-            while true; do
-              boot_completed=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-              if [ "$boot_completed" = "1" ]; then
-                echo "Emulator is fully booted!"
-                break
-              fi
-              echo "Waiting for boot completion..."
-              sleep 10
-            done
-            
-            # Additional wait to ensure stability
-            sleep 15
-            
-            # Check device status
-            adb devices -l
-            adb shell getprop
-            
-            # Start Appium with better logging
-            echo "Starting Appium server..."
-            nohup appium --base-path /wd/hub --allow-cors --log-level info:info > appium.log 2>&1 &
-            APPIUM_PID=$!
-            
-            # Wait for Appium to start
-            sleep 15
-            
-            # Check if Appium is running
-            if ps -p $APPIUM_PID > /dev/null; then
-              echo "Appium server started successfully with PID: $APPIUM_PID"
-            else
-              echo "Appium server failed to start"
-              cat appium.log
-              exit 1
+          cmdline-tools-version: "latest"
+          build-tools-version: "30.0.3"
+          platform-version: "android-${{ env.API_LEVEL }}"
+
+      - name: Install system image and create AVD
+        run: |
+          # Install system image
+          sdkmanager "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}"
+          
+          # Accept licenses
+          yes | sdkmanager --licenses
+          
+          # Create AVD
+          echo "no" | avdmanager create avd \
+            --name ${{ env.AVD_NAME }} \
+            --package "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" \
+            --device "pixel_3a" \
+            --force
+          
+          # List AVDs to verify
+          avdmanager list avd
+
+      - name: Start emulator and wait for boot
+        run: |
+          # Start emulator in background with verbose logging
+          emulator -avd ${{ env.AVD_NAME }} \
+            -no-window \
+            -no-snapshot \
+            -gpu swiftshader_indirect \
+            -no-boot-anim \
+            -noaudio \
+            -verbose \
+            -qemu > emulator.log 2>&1 &
+          
+          EMULATOR_PID=$!
+          echo "EMULATOR_PID=$EMULATOR_PID" >> $GITHUB_ENV
+          
+          echo "Emulator started with PID: $EMULATOR_PID"
+          echo "Waiting for device to be ready..."
+
+          # Restart ADB server to ensure clean state
+          adb kill-server
+          sleep 3
+          adb start-server
+          sleep 3
+
+          # Wait for device to appear with timeout
+          echo "Waiting for device to appear..."
+          for i in {1..30}; do
+            if adb devices | grep -q emulator; then
+              echo "Emulator detected!"
+              break
+            fi
+            echo "Attempt $i/30 - Device not found yet..."
+            sleep 5
+          done
+
+          # Wait for device to be ready
+          adb wait-for-device
+          echo "Device connected, waiting for boot completion..."
+
+          # Wait for boot completion with timeout and retries
+          BOOT_COMPLETED=false
+          for i in {1..60}; do
+            BOOT_PROP=$(adb shell getprop sys.boot_completed 2>/dev/null || echo "")
+            if [ "$BOOT_PROP" = "1" ]; then
+              echo "Emulator fully booted!"
+              BOOT_COMPLETED=true
+              break
             fi
             
-            # Run TestNG suite
-            echo "Running tests..."
-            mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test
+            # Also check dev.bootcomplete as alternative
+            DEV_BOOT=$(adb shell getprop dev.bootcomplete 2>/dev/null || echo "")
+            if [ "$DEV_BOOT" = "1" ]; then
+              echo "Emulator boot complete detected via dev.bootcomplete!"
+              BOOT_COMPLETED=true
+              break
+            fi
             
-            # Stop Appium after tests
-            kill $APPIUM_PID
+            echo "Boot attempt $i/60 - sys.boot_completed: $BOOT_PROP, dev.bootcomplete: $DEV_BOOT"
+            sleep 5
+          done
 
-      - name: Upload reports (Extent/TestNG) and logs
+          if [ "$BOOT_COMPLETED" = "false" ]; then
+            echo "Emulator failed to boot within timeout period"
+            echo "Emulator log:"
+            cat emulator.log
+            echo "ADB devices:"
+            adb devices -l
+            echo "Last system properties:"
+            adb shell getprop || true
+            exit 1
+          fi
+
+          # Additional stability wait
+          sleep 10
+          
+          # Verify emulator status
+          echo "Final emulator status:"
+          adb devices -l
+          echo "System properties:"
+          adb shell getprop | grep -E "(boot|init|sys)" | head -20
+
+      - name: Start Appium server
+        run: |
+          echo "Starting Appium server..."
+          nohup appium --base-path /wd/hub --allow-cors --log-level info:info > appium.log 2>&1 &
+          APPIUM_PID=$!
+          echo "APPIUM_PID=$APPIUM_PID" >> $GITHUB_ENV
+          sleep 15
+          
+          # Verify Appium is running
+          if ps -p $APPIUM_PID > /dev/null; then
+            echo "Appium server started successfully with PID: $APPIUM_PID"
+          else
+            echo "Appium server failed to start"
+            cat appium.log
+            exit 1
+          fi
+
+      - name: Run tests
+        run: |
+          echo "Running TestNG tests..."
+          mvn -B -ntp -Dtestng.suiteXmlFile="${{ env.SUITE_XML }}" test
+
+      - name: Stop emulator and Appium
+        if: always()
+        run: |
+          echo "Stopping emulator and Appium..."
+          # Stop Appium
+          if [ -n "$APPIUM_PID" ]; then
+            kill $APPIUM_PID 2>/dev/null || true
+          fi
+          
+          # Stop emulator
+          if [ -n "$EMULATOR_PID" ]; then
+            adb emu kill
+            kill $EMULATOR_PID 2>/dev/null || true
+          fi
+          
+          # Clean up any remaining processes
+          pkill -f emulator || true
+          pkill -f qemu || true
+
+      - name: Upload reports and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -118,4 +204,16 @@ jobs:
             reports/**
             test-output/**
             appium.log
-            **/*.log
+            emulator.log
+            **/*.png
+            **/*.txt
+
+      - name: Check emulator logs on failure
+        if: failure()
+        run: |
+          echo "=== EMULATOR LOG ==="
+          cat emulator.log || true
+          echo "=== APPIUM LOG ==="
+          cat appium.log || true
+          echo "=== ADB DEVICES ==="
+          adb devices -l || true
