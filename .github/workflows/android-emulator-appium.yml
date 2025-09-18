@@ -15,7 +15,6 @@ jobs:
       ANDROID_HOME: $HOME/android-sdk
       AVD_NAME: ci-api30
       API_LEVEL: "30"
-      # 👇 pick the suite you want to run
       SUITE_XML: "testNGSuite/testng_Smoke.xml"
 
     steps:
@@ -34,13 +33,13 @@ jobs:
         with:
           node-version: "20"
 
-	  - name: Install Appium 2 + UiAutomator2 driver
-		run: |
-		  npm i -g appium@2
-		  appium -v
-		  appium driver list --installed || true
-		  appium driver install uiautomator2
-		  appium driver list --installed
+      - name: Install Appium 2 + UiAutomator2 driver
+        run: |
+          npm i -g appium@2
+          appium -v
+          appium driver list --installed || true
+          appium driver install uiautomator2
+          appium driver list --installed
 
       - name: Install Android SDK (cmdline-tools)
         run: |
