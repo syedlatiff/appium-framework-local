@@ -33,9 +33,9 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install Appium 2 + UiAutomator2 driver
+      - name: Install Appium 3 + UiAutomator2 driver
         run: |
-          npm i -g appium@2
+          npm i -g appium@next
           appium -v
           appium driver list --installed || true
           appium driver install uiautomator2
