@@ -1,3 +1,4 @@
+# .github/workflows/android-emulator-appium.yml
 name: Android UI Tests (Appium + Emulator)
 
 on:
@@ -10,11 +11,11 @@ jobs:
   android-ui-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-
     env:
-      AVD_NAME: ci-api30
       API_LEVEL: "30"
-      # 👇 pick the suite you want to run
+      TARGET: "google_apis"
+      ARCH: "x86_64"
+      PROFILE: "pixel_3a"
       SUITE_XML: "testNGSuite/testng_Smoke.xml"
 
     steps:
@@ -33,7 +34,6 @@ jobs:
         with:
           node-version: "20"
 
-      # Appium v3 is required by the current uiautomator2 driver
       - name: Install Appium 3 + UiAutomator2 driver
         run: |
           npm i -g appium@next
@@ -42,45 +42,29 @@ jobs:
           appium driver install uiautomator2
           appium driver list --installed
 
-      # Install Android SDK using official action (adds sdkmanager/avdmanager/emulator to PATH)
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Start Android emulator and run tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: ${{ env.TARGET }}
+          arch: ${{ env.ARCH }}
+          profile: ${{ env.PROFILE }}
+          headless: true
+          emulator-options: -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            adb devices -l
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
+            # Optional speed-ups
+            adb shell settings put global window_animation_scale 0 || true
+            adb shell settings put global transition_animation_scale 0 || true
+            adb shell settings put global animator_duration_scale 0 || true
 
-      - name: Install SDK packages (API ${{ env.API_LEVEL }})
-        run: |
-          sdkmanager "platform-tools" "emulator" \
-            "platforms;android-${API_LEVEL}" \
-            "build-tools;30.0.3" \
-            "system-images;android-${API_LEVEL};google_apis;x86_64"
+            # Start Appium
+            nohup appium --base-path /wd/hub --allow-cors --log-level info:info > appium.log 2>&1 &
+            sleep 5
 
-      - name: Create AVD
-        run: |
-          echo "no" | avdmanager create avd \
-            -n "$AVD_NAME" -k "system-images;android-${API_LEVEL};google_apis;x86_64" --device "pixel_3a"
-
-      - name: Boot emulator (headless)
-        run: |
-          nohup emulator -avd "$AVD_NAME" \
-            -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none > /dev/null 2>&1 &
-          adb wait-for-device
-          for i in {1..180}; do
-            booted=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            [ "$booted" = "1" ] && break
-            sleep 2
-          done
-          adb shell input keyevent 82
-
-      - name: Start Appium server
-        run: |
-          nohup appium --base-path /wd/hub --allow-cors --log-level info:info > appium.log 2>&1 &
-          sleep 5
-
-      - name: Build & run tests (Maven + TestNG)
-        run: |
-          mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test
+            # Run TestNG suite
+            mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test
 
       - name: Upload reports (Extent/TestNG) and logs
         if: always()
