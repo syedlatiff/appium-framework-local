@@ -10,11 +10,11 @@ jobs:
   android-ui-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
     env:
-      ANDROID_SDK_ROOT: $HOME/android-sdk
-      ANDROID_HOME: $HOME/android-sdk
       AVD_NAME: ci-api30
       API_LEVEL: "30"
+      # 👇 pick the suite you want to run
       SUITE_XML: "testNGSuite/testng_Smoke.xml"
 
     steps:
@@ -33,6 +33,7 @@ jobs:
         with:
           node-version: "20"
 
+      # Appium v3 is required by the current uiautomator2 driver
       - name: Install Appium 3 + UiAutomator2 driver
         run: |
           npm i -g appium@next
@@ -41,33 +42,31 @@ jobs:
           appium driver install uiautomator2
           appium driver list --installed
 
-      - name: Install Android SDK (cmdline-tools)
-        run: |
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-          curl -sLo sdk.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q sdk.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
-          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
+      # Install Android SDK using official action (adds sdkmanager/avdmanager/emulator to PATH)
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses
 
       - name: Install SDK packages (API ${{ env.API_LEVEL }})
         run: |
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "platform-tools" "emulator" \
+          sdkmanager "platform-tools" "emulator" \
             "platforms;android-${API_LEVEL}" \
             "build-tools;30.0.3" \
             "system-images;android-${API_LEVEL};google_apis;x86_64"
 
       - name: Create AVD
         run: |
-          echo "no" | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager" create avd \
+          echo "no" | avdmanager create avd \
             -n "$AVD_NAME" -k "system-images;android-${API_LEVEL};google_apis;x86_64" --device "pixel_3a"
 
       - name: Boot emulator (headless)
         run: |
-          nohup "$ANDROID_SDK_ROOT/emulator/emulator" -avd "$AVD_NAME" \
+          nohup emulator -avd "$AVD_NAME" \
             -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none > /dev/null 2>&1 &
           adb wait-for-device
-          for i in {1..120}; do
+          for i in {1..180}; do
             booted=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             [ "$booted" = "1" ] && break
             sleep 2
