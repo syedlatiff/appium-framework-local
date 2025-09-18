@@ -58,16 +58,56 @@ jobs:
           profile: ${{ env.PROFILE }}
           force-avd-creation: true
           disable-linux-hw-accel: true
-          emulator-boot-timeout: 1200
+          emulator-boot-timeout: 1200 # Increased timeout
           disable-animations: true
           emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -no-boot-anim -camera-back none -camera-front none -noaudio
           script: |
+            # Wait for emulator to be fully ready
+            echo "Waiting for emulator to be fully ready..."
+            adb wait-for-device
+            echo "Device detected, waiting for boot completion..."
+            
+            # Wait for boot completion with retries
+            while true; do
+              boot_completed=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              if [ "$boot_completed" = "1" ]; then
+                echo "Emulator is fully booted!"
+                break
+              fi
+              echo "Waiting for boot completion..."
+              sleep 10
+            done
+            
+            # Additional wait to ensure stability
+            sleep 15
+            
+            # Check device status
             adb devices -l
-            # Start Appium
+            adb shell getprop
+            
+            # Start Appium with better logging
+            echo "Starting Appium server..."
             nohup appium --base-path /wd/hub --allow-cors --log-level info:info > appium.log 2>&1 &
-            sleep 8
+            APPIUM_PID=$!
+            
+            # Wait for Appium to start
+            sleep 15
+            
+            # Check if Appium is running
+            if ps -p $APPIUM_PID > /dev/null; then
+              echo "Appium server started successfully with PID: $APPIUM_PID"
+            else
+              echo "Appium server failed to start"
+              cat appium.log
+              exit 1
+            fi
+            
             # Run TestNG suite
+            echo "Running tests..."
             mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test
+            
+            # Stop Appium after tests
+            kill $APPIUM_PID
 
       - name: Upload reports (Extent/TestNG) and logs
         if: always()
@@ -78,3 +118,4 @@ jobs:
             reports/**
             test-output/**
             appium.log
+            **/*.log
