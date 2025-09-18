@@ -1,0 +1,17 @@
+# OS
+.DS_Store
+
+# Maven/Java
+target/
+*.class
+
+# Test reports
+test-output/
+reports/
+
+# IDEs
+.idea/
+*.iml
+.project
+.classpath
+.settings/
