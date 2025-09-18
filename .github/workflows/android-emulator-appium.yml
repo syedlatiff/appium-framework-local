@@ -34,6 +34,13 @@ jobs:
         with:
           node-version: "20"
 
+      # Fix for "libpulse.so.0 not found" and other emulator deps
+      - name: Install emulator dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpulse0 libglu1-mesa mesa-utils libnss3
+
       - name: Install Appium 3 + UiAutomator2 driver
         run: |
           npm i -g appium@next
@@ -49,20 +56,16 @@ jobs:
           target: ${{ env.TARGET }}
           arch: ${{ env.ARCH }}
           profile: ${{ env.PROFILE }}
-          headless: true
-          emulator-options: -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim
+          force-avd-creation: true
+          disable-linux-hw-accel: true
+          emulator-boot-timeout: 1200
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -no-boot-anim -camera-back none -camera-front none -noaudio
           script: |
             adb devices -l
-
-            # Optional speed-ups
-            adb shell settings put global window_animation_scale 0 || true
-            adb shell settings put global transition_animation_scale 0 || true
-            adb shell settings put global animator_duration_scale 0 || true
-
             # Start Appium
             nohup appium --base-path /wd/hub --allow-cors --log-level info:info > appium.log 2>&1 &
-            sleep 5
-
+            sleep 8
             # Run TestNG suite
             mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test
 
