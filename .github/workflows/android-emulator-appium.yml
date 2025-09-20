@@ -80,10 +80,7 @@ jobs:
             set -eu
 
             echo "Starting Appium server (no /wd/hub base path)…"
-            appium --log-level info \
-                   --relaxed-security \
-                   --allow-insecure chromedriver_autodownload \
-                   > appium.log 2>&1 &
+            appium --log-level info --relaxed-security --allow-insecure chromedriver_autodownload > appium.log 2>&1 &
             APPIUM_PID=$!
 
             # Always stop Appium on exit
