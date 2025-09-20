@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      SUITE_XML: "testNGSuite/testng_Smoke.xml"   # Android-only suite
+      SUITE_XML: "testNGSuite/testng_android.xml"   # Android-only suite
 
     steps:
       - name: Checkout
