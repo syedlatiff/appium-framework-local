@@ -11,10 +11,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
-      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"     # iOS-only TestNG suite (you create this)
-      IOS_DEVICE: "iPhone 15"                         # Fallback to 14 if 15 isn't available
+      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"                 # iOS-only suite
       APPIUM_URL: "http://127.0.0.1:4723/"
-      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # <— update if needed
+      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # update if needed
 
     steps:
       - name: Checkout
@@ -35,14 +34,37 @@ jobs:
           appium driver install xcuitest
           appium -v
 
+      # Discover a bootable iPhone simulator that actually exists on this runner
+      - name: Pick a bootable iPhone Simulator
+        id: pick-sim
+        run: |
+          set -e
+          echo "Available simulators:"
+          xcrun simctl list devices available
+
+          # Prefer newer models if present, fall back gracefully
+          CHOICES='iPhone 16 Pro|iPhone 16|iPhone 15 Pro|iPhone 15|iPhone 14 Pro|iPhone 14'
+          LINE=$(xcrun simctl list devices available | \
+                 awk -F'[()]' -v pat="$CHOICES" '$0 ~ pat && $0 ~ /Shutdown/ {print; exit}')
+
+          if [ -z "$LINE" ]; then
+            echo "No suitable iPhone simulator found"; exit 1
+          fi
+
+          # Extract name (left of first '(' trimmed) and UDID (inside parentheses)
+          NAME=$(echo "$LINE" | sed -E 's/^[[:space:]]*//; s/ *\([^)]*\).*//')
+          UDID=$(echo "$LINE" | sed -n 's/.*(\([^)]*\)).*/\1/p')
+
+          echo "Chosen simulator: $NAME ($UDID)"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
       - name: Boot iOS Simulator
         run: |
           set -e
-          DEVICE="$IOS_DEVICE"
-          xcrun simctl list devices | grep -q "$DEVICE" || DEVICE="iPhone 14"
-          # Boot (idempotent)
-          xcrun simctl bootstatus booted || ( xcrun simctl shutdown all || true; xcrun simctl boot "$DEVICE"; xcrun simctl bootstatus booted )
-          echo "Booted simulator: $DEVICE"
+          UDID="${{ steps.pick-sim.outputs.udid }}"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
           xcrun simctl list | grep -A1 "Booted"
 
       - name: Start Appium server
@@ -51,16 +73,21 @@ jobs:
           sleep 10
           curl -sf $APPIUM_URL/status || true
 
-      # (Optional) Show iOS suite content for sanity
-      - name: Show iOS suite
+      - name: Show iOS suite (sanity)
         run: |
           echo "Using suite: $IOS_SUITE_XML"
           sed -n '1,200p' "$IOS_SUITE_XML" || true
 
       - name: Run iOS TestNG suite
         run: |
-          # Pass REMOTE_URL so IOSBaseTest connects to this server; pass .app path via -Dios.app.path
-          mvn -B -ntp -Dsurefire.suiteXmlFiles=${IOS_SUITE_XML} -DREMOTE_URL=${APPIUM_URL} -Dios.app.path="${IOS_APP_PATH}" -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false test
+          # Pass selected simulator name and .app path to your tests
+          mvn -B -ntp \
+            -Dsurefire.suiteXmlFiles=${IOS_SUITE_XML} \
+            -DREMOTE_URL=${APPIUM_URL} \
+            "-Dios.device=${{ steps.pick-sim.outputs.name }}" \
+            -Dios.app.path="${IOS_APP_PATH}" \
+            -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false \
+            test
 
       - name: Stop Appium
         if: always()
