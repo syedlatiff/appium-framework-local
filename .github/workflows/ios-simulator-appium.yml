@@ -11,7 +11,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
-      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"                 # iOS-only suite
+      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"                 # iOS-only TestNG suite
       APPIUM_URL: "http://127.0.0.1:4723/"
       IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # update if needed
 
@@ -34,38 +34,52 @@ jobs:
           appium driver install xcuitest
           appium -v
 
-      # Discover a bootable iPhone simulator that actually exists on this runner
+      # Pick a real, available iPhone simulator and export its NAME + UDID
       - name: Pick a bootable iPhone Simulator
         id: pick-sim
         run: |
-          set -e
-          echo "Available simulators:"
-          xcrun simctl list devices available
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          data = json.loads(subprocess.check_output(["xcrun","simctl","list","--json","devices","available"]))
+          preferred = ["iPhone 16 Pro","iPhone 16","iPhone 15 Pro","iPhone 15","iPhone 14 Pro","iPhone 14"]
+          found = None
 
-          # Prefer newer models if present, fall back gracefully
-          CHOICES='iPhone 16 Pro|iPhone 16|iPhone 15 Pro|iPhone 15|iPhone 14 Pro|iPhone 14'
-          LINE=$(xcrun simctl list devices available | \
-                 awk -F'[()]' -v pat="$CHOICES" '$0 ~ pat && $0 ~ /Shutdown/ {print; exit}')
+          # Try preferred models first
+          for want in preferred:
+              for devs in data.get("devices", {}).values():
+                  for d in devs:
+                      if d.get("name")==want and d.get("isAvailable",True) and d.get("state") in ("Shutdown","Booted"):
+                          found = d; break
+                  if found: break
+              if found: break
 
-          if [ -z "$LINE" ]; then
-            echo "No suitable iPhone simulator found"; exit 1
-          fi
+          # Otherwise, any available iPhone
+          if not found:
+              for devs in data.get("devices", {}).values():
+                  for d in devs:
+                      if str(d.get("name","")).startswith("iPhone") and d.get("isAvailable",True) and d.get("state") in ("Shutdown","Booted"):
+                          found = d; break
+                  if found: break
 
-          # Extract name (left of first '(' trimmed) and UDID (inside parentheses)
-          NAME=$(echo "$LINE" | sed -E 's/^[[:space:]]*//; s/ *\([^)]*\).*//')
-          UDID=$(echo "$LINE" | sed -n 's/.*(\([^)]*\)).*/\1/p')
+          if not found:
+              print("::error::No suitable iPhone simulator found", file=sys.stderr)
+              sys.exit(1)
 
-          echo "Chosen simulator: $NAME ($UDID)"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          # Write outputs for later steps
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"name={found['name']}\n")
+              f.write(f"udid={found['udid']}\n")
+          print(f"Chosen simulator: {found['name']} ({found['udid']})")
+          PY
 
       - name: Boot iOS Simulator
         run: |
           set -e
           UDID="${{ steps.pick-sim.outputs.udid }}"
+          echo "Booting $UDID"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl list | grep -A1 "Booted"
+          xcrun simctl list | grep -A1 "Booted" || true
 
       - name: Start Appium server
         run: |
@@ -80,7 +94,6 @@ jobs:
 
       - name: Run iOS TestNG suite
         run: |
-          # Pass selected simulator name and .app path to your tests
           mvn -B -ntp \
             -Dsurefire.suiteXmlFiles=${IOS_SUITE_XML} \
             -DREMOTE_URL=${APPIUM_URL} \
