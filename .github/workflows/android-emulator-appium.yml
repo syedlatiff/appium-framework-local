@@ -1,4 +1,4 @@
-name: Android UI Tests (Appium + Emulator)
+name: Android UI Tests (Appium + Pre-built Emulator)
 
 on:
   push:
@@ -9,14 +9,9 @@ on:
 jobs:
   android-ui-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
-      API_LEVEL: "29"
-      TARGET: "google_apis"
-      ARCH: "x86"
-      PROFILE: "pixel_3a"
       SUITE_XML: "testNGSuite/testng_Smoke.xml"
-      AVD_NAME: "test_avd"
 
     steps:
       - name: Checkout
@@ -33,110 +28,93 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          # Removed cache: 'npm' since we don't have package.json in root
-
-      - name: Install emulator dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libpulse0 libglu1-mesa mesa-utils libnss3 \
-            net-tools
 
       - name: Install Appium globally
         run: |
-          npm install -g appium
-          npm install -g appium-uiautomator2-driver
+          npm install -g appium@latest
+          appium driver install uiautomator2
           appium -v
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
-
-      - name: Accept Android licenses
+      - name: Enable KVM group perms
         run: |
-          yes | sdkmanager --licenses
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
-      - name: Install system image and create AVD
-        run: |
-          sdkmanager "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}"
-          echo "no" | avdmanager create avd \
-            --name ${{ env.AVD_NAME }} \
-            --package "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" \
-            --device "pixel_3a" \
-            --force
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-29
 
-      - name: Start emulator
-        run: |
-          emulator -avd ${{ env.AVD_NAME }} \
-            -no-window \
-            -no-snapshot \
-            -gpu swiftshader_indirect \
-            -no-boot-anim \
-            -noaudio \
-            -memory 2048 &
-          echo "EMULATOR_PID=$!" >> $GITHUB_ENV
+      - name: Create AVD and generate snapshot for caching
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          profile: pixel_3a
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
+          disable-animations: true
+          script: echo "Generated AVD snapshot for caching."
 
-      - name: Wait for emulator to be ready
-        run: |
-          echo "Waiting for emulator to boot..."
-          # Wait for emulator to appear
-          for i in {1..30}; do
-            if adb devices | grep -q "emulator"; then
-              echo "✅ Emulator detected!"
-              break
-            fi
-            echo "Waiting for emulator... ($i/30)"
-            sleep 10
-          done
-          
-          # Wait for boot completion
-          adb wait-for-device
-          for i in {1..30}; do
-            if adb shell getprop sys.boot_completed | grep -q "1"; then
-              echo "✅ Emulator fully booted!"
-              break
-            fi
-            echo "Waiting for boot completion... ($i/30)"
-            sleep 5
-          done
+      - name: Run Appium Tests with Emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          profile: pixel_3a
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
+          disable-animations: true
+          script: |
+            echo "Starting Appium server..."
+            appium --log-level info --relaxed-security --allow-insecure chromedriver_autodownload &
+            APPIUM_PID=$!
+            
+            # Wait for Appium to start
+            echo "Waiting for Appium to be ready..."
+            sleep 15
+            
+            # Verify devices and Appium
+            echo "Checking ADB devices:"
+            adb devices
+            echo "Checking Appium status:"
+            curl -s http://localhost:4723/wd/hub/status || echo "Appium status check failed"
+            
+            echo "Running TestNG tests..."
+            # Run tests with retry
+            for attempt in 1 2; do
+              echo "Test attempt $attempt"
+              if mvn -B -ntp -Dtestng.suiteXmlFile="${{ env.SUITE_XML }}" test; then
+                echo "✅ Tests passed on attempt $attempt"
+                break
+              elif [ $attempt -eq 2 ]; then
+                echo "❌ Tests failed after 2 attempts"
+                exit 1
+              else
+                echo "⚠️  Test attempt $attempt failed, retrying in 30s..."
+                sleep 30
+              fi
+            done
+            
+            # Stop Appium
+            kill $APPIUM_PID || true
 
-      - name: Start Appium server
-        run: |
-          echo "Starting Appium server..."
-          appium --log-level info --relaxed-security &
-          echo "APPIUM_PID=$!" >> $GITHUB_ENV
-          sleep 10
-
-      - name: Run tests with retry
-        run: |
-          echo "Running TestNG tests..."
-          echo "Current devices:"
-          adb devices
-          
-          # Run tests with retry in case of temporary failures
-          mvn -B -ntp -Dtestng.suiteXmlFile="${{ env.SUITE_XML }}" test || \
-          mvn -B -ntp -Dtestng.suiteXmlFile="${{ env.SUITE_XML }}" test
-
-      - name: Check if reports exist
-        run: |
-          echo "Checking for test reports..."
-          ls -la target/ || echo "No target directory"
-          ls -la target/surefire-reports/ || echo "No surefire-reports"
-          ls -la test-output/ || echo "No test-output directory"
-
-      - name: Upload test reports (if they exist)
+      - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-ui-test-reports
+          name: android-ui-test-reports-${{ github.run_number }}
           path: |
             target/surefire-reports/
             target/failsafe-reports/
             test-output/
+            screenshots/
           if-no-files-found: ignore
-
-      - name: Stop services
-        if: always()
-        run: |
-          adb emu kill || true
-          pkill -f emulator || true
-          pkill -f appium || true
