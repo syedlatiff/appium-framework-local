@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<suite name="iOS Test Suite">
+	<listeners>
+		<listener class-name="org.latiffsyed.testUtils.Listeners"/>
+	</listeners>
+	<test thread-count="5" name=" iOS Alert Handling Test">
+		<classes>
+			<class name="org.latiffsyed.tests.iOS.AlertViewMessageValidationTest"/>
+		</classes>
+	</test>
+</suite>

@@ -65,7 +65,7 @@ jobs:
           disable-animations: true
           script: echo "Generated AVD snapshot for caching."
 
-      - name: Run Appium Tests with Emulator
+      - name: Run Android Only Appium Tests with Emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29

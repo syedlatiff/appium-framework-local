@@ -1,0 +1,79 @@
+name: iOS UI Tests (Appium + Simulator)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ios-simulator-tests:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"     # iOS-only TestNG suite (you create this)
+      IOS_DEVICE: "iPhone 15"                         # Fallback to 14 if 15 isn't available
+      APPIUM_URL: "http://127.0.0.1:4723/"
+      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # <— update if needed
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Install Appium + XCUITest driver
+        run: |
+          npm config set fund false
+          npm config set audit false
+          npm i -g appium@latest
+          appium driver install xcuitest
+          appium -v
+
+      - name: Boot iOS Simulator
+        run: |
+          set -e
+          DEVICE="$IOS_DEVICE"
+          xcrun simctl list devices | grep -q "$DEVICE" || DEVICE="iPhone 14"
+          # Boot (idempotent)
+          xcrun simctl bootstatus booted || ( xcrun simctl shutdown all || true; xcrun simctl boot "$DEVICE"; xcrun simctl bootstatus booted )
+          echo "Booted simulator: $DEVICE"
+          xcrun simctl list | grep -A1 "Booted"
+
+      - name: Start Appium server
+        run: |
+          nohup appium --log-level info > appium-ios.log 2>&1 & echo $! > appium-ios.pid
+          sleep 10
+          curl -sf $APPIUM_URL/status || true
+
+      # (Optional) Show iOS suite content for sanity
+      - name: Show iOS suite
+        run: |
+          echo "Using suite: $IOS_SUITE_XML"
+          sed -n '1,200p' "$IOS_SUITE_XML" || true
+
+      - name: Run iOS TestNG suite
+        run: |
+          # Pass REMOTE_URL so IOSBaseTest connects to this server; pass .app path via -Dios.app.path
+          mvn -B -ntp -Dsurefire.suiteXmlFiles=${IOS_SUITE_XML} -DREMOTE_URL=${APPIUM_URL} -Dios.app.path="${IOS_APP_PATH}" -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false test
+
+      - name: Stop Appium
+        if: always()
+        run: |
+          kill "$(cat appium-ios.pid)" 2>/dev/null || true
+
+      - name: Upload iOS reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sim-test-reports-${{ github.run_number }}
+          path: |
+            target/surefire-reports/
+            test-output/
+            appium-ios.log
+          if-no-files-found: ignore
