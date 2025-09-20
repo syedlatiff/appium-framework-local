@@ -33,11 +33,11 @@ jobs:
         run: |
           npm config set fund false
           npm config set audit false
-          npm install -g appium@latest
+          npm i -g appium@latest
           appium driver install uiautomator2
           appium -v
 
-      # Optional on GH-hosted runners, but harmless:
+      # Optional; keeps emulator fast on GH runners
       - name: Enable KVM group perms
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -79,10 +79,8 @@ jobs:
           script: |
             set -euo pipefail
 
-            echo "Starting Appium server…"
-            # Use /wd/hub base path so client & healthcheck match
-            appium --base-path /wd/hub \
-                   --log-level info \
+            echo "Starting Appium server (no /wd/hub base path)…"
+            appium --log-level info \
                    --relaxed-security \
                    --allow-insecure chromedriver_autodownload \
                    > appium.log 2>&1 &
@@ -91,14 +89,14 @@ jobs:
             # Always stop Appium on exit
             trap 'echo "Stopping Appium ($APPIUM_PID)…"; kill $APPIUM_PID || true' EXIT
 
-            echo "Waiting for Appium to be ready…"
+            echo "Waiting for Appium to be ready at /status…"
             for i in {1..30}; do
-              if curl -sf http://127.0.0.1:4723/wd/hub/status >/dev/null; then
+              if curl -sf http://127.0.0.1:4723/status >/dev/null; then
                 echo "Appium is up."
                 break
               fi
               if ! kill -0 $APPIUM_PID 2>/dev/null; then
-                echo "Appium process died early. Last 200 lines:"
+                echo "Appium died early. Last 200 lines:"
                 tail -n 200 appium.log || true
                 exit 1
               fi
