@@ -87,7 +87,9 @@ jobs:
             curl -sf http://127.0.0.1:4723/status || true
 
             # Run your TestNG suite against the already running server (single line!)
-            mvn -B -ntp -Dtestng.suiteXmlFile=${SUITE_XML} -DREMOTE_URL=http://127.0.0.1:4723/ -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false test
+            #mvn -B -ntp -Dtestng.suiteXmlFile=${SUITE_XML} -DREMOTE_URL=http://127.0.0.1:4723/ -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false test
+			mvn -B -ntp -Dtest=**/android/**/**Test -DREMOTE_URL=http://127.0.0.1:4723/ -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false test
+
 
             # Stop Appium
             kill "$(cat appium.pid)" 2>/dev/null || true
