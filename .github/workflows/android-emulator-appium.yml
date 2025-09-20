@@ -76,28 +76,36 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
           disable-animations: true
           script: |
-            # Use POSIX sh-safe constructs (action runs each line via /bin/sh -c)
-            set -e
+            bash -lc '
+              set -euo pipefail
 
-            echo "Starting Appium server (no /wd/hub base path)…"
-            appium --log-level info --relaxed-security --allow-insecure chromedriver_autodownload > appium.log 2>&1 &
-            APPIUM_PID=$!
-            trap 'echo "Stopping Appium ($APPIUM_PID)…"; kill $APPIUM_PID 2>/dev/null || true' EXIT
+              echo "Starting Appium server (no /wd/hub base path)…"
+              appium --log-level info \
+                     --relaxed-security \
+                     --allow-insecure chromedriver_autodownload \
+                     > appium.log 2>&1 &
+              APPIUM_PID=$!
+              trap "echo Stopping Appium ($APPIUM_PID)…; kill $APPIUM_PID 2>/dev/null || true" EXIT
 
-            echo "Waiting for Appium to be ready at /status…"
-            i=0; until curl -sf http://127.0.0.1:4723/status >/dev/null; do
-              if ! kill -0 "$APPIUM_PID" 2>/dev/null; then echo "Appium died early. Log tail:"; tail -n 200 appium.log || true; exit 1; fi
-              i=$((i+1)); [ "$i" -ge 30 ] && { echo "Timed out waiting for Appium"; tail -n 200 appium.log || true; exit 1; }
-              sleep 2
-            done
-            echo "Appium is up."
+              echo "Waiting for Appium to be ready at /status…"
+              for i in {1..30}; do
+                if curl -sf http://127.0.0.1:4723/status >/dev/null; then
+                  echo "Appium is up."
+                  break
+                fi
+                if ! kill -0 "$APPIUM_PID" 2>/dev/null; then
+                  echo "Appium died early. Log tail:"; tail -n 200 appium.log || true; exit 1
+                fi
+                sleep 2
+              done
 
-            echo "ADB devices:"
-            adb devices
+              echo "ADB devices:"
+              adb devices
 
-            echo "Running TestNG suite: ${SUITE_XML}"
-            # Single-line retry: run once, if it fails, wait and run once more.
-            mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test || ( echo "First attempt failed, retrying in 30s…"; sleep 30; mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test )
+              echo "Running TestNG suite: ${SUITE_XML}"
+              mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test \
+              || ( echo "First attempt failed, retrying in 30s…"; sleep 30; mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test || (echo "Second attempt failed"; tail -n 200 appium.log || true; exit 1) )
+            '
 
       - name: Upload test reports
         if: always()
