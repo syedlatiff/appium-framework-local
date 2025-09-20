@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      SUITE_XML: "testNGSuite/testng_Smoke.xml"
+      SUITE_XML: "testNGSuite/testng_Smoke.xml"   # Android-only suite
 
     steps:
       - name: Checkout
@@ -79,17 +79,15 @@ jobs:
             # Start Appium (no /wd/hub) and save PID
             nohup appium --log-level info --relaxed-security --allow-insecure chromedriver_autodownload > appium.log 2>&1 & echo $! > appium.pid
 
-            # Give Appium time to come up (simple & robust for this action)
+            # Give Appium time to come up
             sleep 15
 
-            # Sanity: list devices and Appium status
+            # Sanity
             adb devices || true
             curl -sf http://127.0.0.1:4723/status || true
 
-            # Run your TestNG suite against the already running server (single line!)
-            #mvn -B -ntp -Dtestng.suiteXmlFile=${SUITE_XML} -DREMOTE_URL=http://127.0.0.1:4723/ -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false test
-			mvn -B -ntp -Dtest=**/android/**/**Test -DREMOTE_URL=http://127.0.0.1:4723/ -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false test
-
+            # Use the ANDROID suite file explicitly (single line; no tabs)
+            mvn -B -ntp -Dsurefire.suiteXmlFiles=${SUITE_XML} -DREMOTE_URL=http://127.0.0.1:4723/ -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false test
 
             # Stop Appium
             kill "$(cat appium.pid)" 2>/dev/null || true
