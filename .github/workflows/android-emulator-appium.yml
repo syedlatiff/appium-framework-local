@@ -29,11 +29,11 @@ jobs:
           java-version: "17"
           cache: maven
 
-      - name: Set up Node.js (ignore lock file warning)
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: 'npm'  # Remove this line if you don't have package.json
+          # Removed cache: 'npm' since we don't have package.json in root
 
       - name: Install emulator dependencies
         run: |
@@ -132,7 +132,7 @@ jobs:
             target/surefire-reports/
             target/failsafe-reports/
             test-output/
-          if-no-files-found: ignore  # Changed from 'warn' to 'ignore'
+          if-no-files-found: ignore
 
       - name: Stop services
         if: always()
