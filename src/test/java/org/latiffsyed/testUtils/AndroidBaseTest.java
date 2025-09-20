@@ -2,101 +2,112 @@ package org.latiffsyed.testUtils;
 
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
+
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.Properties;
+
 import org.latiffsyed.core.utils.AppiumUtils;
 import org.latiffsyed.pageobjects.android.FormPage;
+
 import io.appium.java_client.android.AndroidDriver;
 import io.appium.java_client.android.options.UiAutomator2Options;
 import io.appium.java_client.service.local.AppiumDriverLocalService;
 
 public class AndroidBaseTest extends AppiumUtils {
-    
+
     public AndroidDriver driver;
     public AppiumDriverLocalService service;
     public FormPage formPage;
-    
-    // Helper method to detect if running on CI (GitHub Actions)
+
     private boolean isRunningOnCI() {
-        return System.getenv("GITHUB_ACTIONS") != null || 
-               System.getenv("CI") != null;
+        return System.getenv("GITHUB_ACTIONS") != null || System.getenv("CI") != null;
     }
-    
-    // Helper method to detect macOS
+
     private boolean isRunningOnMac() {
         return System.getProperty("os.name").toLowerCase().contains("mac");
     }
-    
-    @BeforeClass(alwaysRun=true)
+
+    @BeforeClass(alwaysRun = true)
     public void configureAppium() throws IOException {
+        // --- Load properties ---
         Properties prop = new Properties();
-        FileInputStream fis = new FileInputStream(
-            System.getProperty("user.dir") + "//src//main//java//org//latiffsyed//resources//data.properties"
-        );
-        prop.load(fis);
-        
-        String ipAddress = System.getProperty("ipAddress") != null ? 
-                          System.getProperty("ipAddress") : prop.getProperty("ipAddress");
-        String port = prop.getProperty("port");
-        
-        System.out.println("Environment Detection:");
+        try (FileInputStream fis = new FileInputStream(
+                Paths.get(System.getProperty("user.dir"),
+                          "src", "main", "java", "org", "latiffsyed", "resources", "data.properties").toString())) {
+            prop.load(fis);
+        }
+
+        String ipAddress = System.getProperty("ipAddress", prop.getProperty("ipAddress"));
+        int port = Integer.parseInt(prop.getProperty("port"));
+
+        System.out.println("Environment:");
         System.out.println("OS: " + System.getProperty("os.name"));
-        System.out.println("Running on CI: " + isRunningOnCI());
-        System.out.println("Running on Mac: " + isRunningOnMac());
-        System.out.println("IP: " + ipAddress);
-        System.out.println("Port: " + port);
-        
-        service = startAppiumServer(ipAddress, Integer.parseInt(port));
-        
+        System.out.println("CI: " + isRunningOnCI());
+        System.out.println("REMOTE_URL: " + getRemoteUrlProperty());
+        System.out.println("IP: " + ipAddress + "  Port: " + port);
+
+        // --- Start local Appium only when REMOTE_URL is NOT provided (i.e., local dev) ---
+        if (getRemoteUrlProperty().isEmpty()) {
+            service = startAppiumServer(ipAddress, port); // from AppiumUtils (no-op in CI)
+        }
+
+        // --- Capabilities ---
         UiAutomator2Options options = new UiAutomator2Options();
-        
-        // Device name configuration
+
+        // Device
         if (isRunningOnCI()) {
-            // GitHub Actions - use emulator
             options.setDeviceName(System.getProperty("androidDevice", "emulator-5554"));
         } else {
-            // Local development - use property or default
             options.setDeviceName(prop.getProperty("AndroidDeviceName"));
         }
-        
-        // Chromedriver configuration - ONLY for macOS local development
+
+        // Chromedriver (local macOS only; CI uses Appium auto-download)
         if (isRunningOnMac() && !isRunningOnCI()) {
-            String chromeDriverPath = "//Users//administrator//Documents//Chromedriver 138.0.7204.92//chromedriver-mac-x64//chromedriver";
-            System.out.println("Setting chromedriver path for macOS: " + chromeDriverPath);
+            String chromeDriverPath =
+                    Paths.get("/Users", "administrator", "Documents",
+                              "Chromedriver 138.0.7204.92", "chromedriver-mac-x64", "chromedriver").toString();
+            System.out.println("Setting chromedriver path (local macOS): " + chromeDriverPath);
             options.setChromedriverExecutable(chromeDriverPath);
         } else {
-            System.out.println("Letting Appium handle chromedriver automatically");
-            // Appium will auto-download and manage chromedriver for CI
+            System.out.println("Chromedriver: letting Appium handle automatically");
         }
-        
-        // App path
-        String appPath = System.getProperty("user.dir") + "//src//test//java//org//latiffsyed//resources//General-Store.apk";
+
+        // App under test
+        String appPath = Paths.get(System.getProperty("user.dir"),
+                                   "src", "test", "java", "org", "latiffsyed", "resources",
+                                   "General-Store.apk").toString();
         System.out.println("App path: " + appPath);
         options.setApp(appPath);
-        
-        // Additional capabilities for better stability
+
+        // Stability tweaks
         options.setCapability("appium:automationName", "UiAutomator2");
         options.setCapability("appium:autoGrantPermissions", true);
         options.setCapability("appium:ignoreHiddenApiPolicyError", true);
         options.setCapability("appium:disableWindowAnimation", true);
-        
-        driver = new AndroidDriver(service.getUrl(), options);
+
+        // --- Create driver pointing to either REMOTE_URL (CI) or local service URL (dev) ---
+        driver = new AndroidDriver(getServerUrlOrThrow(), options); // from AppiumUtils
         driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
+
+        // Page object
         formPage = new FormPage(driver);
-        
-        System.out.println("Appium configuration completed successfully");
+
+        System.out.println("Appium configuration completed successfully.");
     }
-    
-    @AfterClass(alwaysRun=true)
+
+    @AfterClass(alwaysRun = true)
     public void tearDown() {
-        if (driver != null) {
-            driver.quit();
+        try {
+            if (driver != null) driver.quit();
+        } finally {
+            // Only stop local service if we started it (i.e., no REMOTE_URL)
+            if (service != null && getRemoteUrlProperty().isEmpty()) {
+                service.stop();
+            }
         }
-        if (service != null) {
-            service.stop();
-        }
-        System.out.println("Appium teardown completed");
+        System.out.println("Appium teardown completed.");
     }
 }
