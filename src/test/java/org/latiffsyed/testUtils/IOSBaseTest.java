@@ -24,7 +24,7 @@ public class IOSBaseTest extends AppiumUtils {
 
     @BeforeClass(alwaysRun = true)
     public void configureAppium() throws IOException {
-        // Load properties (optional for local dev)
+        // Load defaults from data.properties (used for local runs)
         Properties prop = new Properties();
         try (FileInputStream fis = new FileInputStream(
                 Paths.get(System.getProperty("user.dir"),
@@ -37,36 +37,46 @@ public class IOSBaseTest extends AppiumUtils {
 
         System.out.println("[iOS] REMOTE_URL: " + getRemoteUrlProperty());
 
-        // Start local Appium ONLY when REMOTE_URL is NOT provided (CI provides the server)
+        // Start local Appium ONLY when REMOTE_URL is NOT provided (local dev)
         if (getRemoteUrlProperty().isEmpty()) {
-            service = startAppiumServer(ipAddress, port); // no-op in CI
+            service = startAppiumServer(ipAddress, port);
         }
 
         // --- Capabilities ---
         XCUITestOptions options = new XCUITestOptions();
 
-        // Device/simulator
-        options.setDeviceName(System.getProperty("ios.device", prop.getProperty("iOSDeviceName", "iPhone 15")));
+        // Device/simulator (system props override data.properties)
+        String deviceName = System.getProperty("ios.device", prop.getProperty("iOSDeviceName", "iPhone 15"));
+        options.setDeviceName(deviceName);
+
         String platformVersion = System.getProperty("ios.platformVersion", prop.getProperty("iOSPlatformVersion", ""));
         if (!platformVersion.isBlank()) {
-            options.setPlatformVersion(platformVersion);
+            options.setPlatformVersion(platformVersion);  // optional in CI
         }
-        options.setAutomationName("XCUITest");
-        options.setWdaLaunchTimeout(Duration.ofSeconds(60));
 
-        // .app path (Simulator build). Allow override via -Dios.app.path
+        // If CI passes a UDID, target the exact booted simulator
+        String udid = System.getProperty("ios.udid", "").trim();
+        if (!udid.isEmpty()) {
+            options.setUdid(udid);
+        }
+
+        options.setAutomationName("XCUITest");
+        options.setWdaLaunchTimeout(Duration.ofSeconds(120));
+
+        // .app path (simulator build). System prop can override default path.
         String defaultAppPath = Paths.get(System.getProperty("user.dir"),
                 "src","test","java","org","latiffsyed","resources","UIKitCatalog.app").toString();
         String appPath = System.getProperty("ios.app.path", defaultAppPath);
         System.out.println("[iOS] Using app: " + appPath);
         options.setApp(appPath);
 
-        // Create driver pointing to REMOTE_URL (CI) or local service URL (dev)
+        // Create driver pointing to CI server (REMOTE_URL) or local service
         driver = new IOSDriver(getServerUrlOrThrow(), options);
         driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
 
         homePage = new HomePage(driver);
-        System.out.println("[iOS] Driver/session started.");
+        System.out.println("[iOS] Driver/session started: " + deviceName +
+                (udid.isEmpty() ? "" : " (" + udid + ")"));
     }
 
     @AfterClass(alwaysRun = true)
@@ -74,7 +84,7 @@ public class IOSBaseTest extends AppiumUtils {
         try {
             if (driver != null) driver.quit();
         } finally {
-            // Only stop local service if we started it (i.e., when REMOTE_URL not provided)
+            // Only stop local service if we started it
             if (service != null && getRemoteUrlProperty().isEmpty()) {
                 service.stop();
             }

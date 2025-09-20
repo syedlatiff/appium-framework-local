@@ -94,10 +94,17 @@ jobs:
 
       - name: Run iOS TestNG suite
         run: |
+          echo "Using .app at: ${IOS_APP_PATH}"
+          if [ ! -d "${IOS_APP_PATH}" ]; then
+            echo "::error::.app not found at ${IOS_APP_PATH}"; exit 1
+          fi
+          ls -ld "${IOS_APP_PATH}"
+
           mvn -B -ntp \
             -Dsurefire.suiteXmlFiles=${IOS_SUITE_XML} \
             -DREMOTE_URL=${APPIUM_URL} \
             "-Dios.device=${{ steps.pick-sim.outputs.name }}" \
+            "-Dios.udid=${{ steps.pick-sim.outputs.udid }}" \
             -Dios.app.path="${IOS_APP_PATH}" \
             -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false \
             test
