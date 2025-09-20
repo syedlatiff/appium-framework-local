@@ -76,36 +76,20 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
           disable-animations: true
           script: |
-            bash -lc '
-              set -euo pipefail
+            # Start Appium (no /wd/hub) and save PID
+            nohup appium --log-level info --relaxed-security --allow-insecure chromedriver_autodownload > appium.log 2>&1 & echo $! > appium.pid
 
-              echo "Starting Appium server (no /wd/hub base path)…"
-              appium --log-level info \
-                     --relaxed-security \
-                     --allow-insecure chromedriver_autodownload \
-                     > appium.log 2>&1 &
-              APPIUM_PID=$!
-              trap "echo Stopping Appium ($APPIUM_PID)…; kill $APPIUM_PID 2>/dev/null || true" EXIT
+            # Give Appium time to come up (simple & robust for this action)
+            sleep 15
 
-              echo "Waiting for Appium to be ready at /status…"
-              for i in {1..30}; do
-                if curl -sf http://127.0.0.1:4723/status >/dev/null; then
-                  echo "Appium is up."
-                  break
-                fi
-                if ! kill -0 "$APPIUM_PID" 2>/dev/null; then
-                  echo "Appium died early. Log tail:"; tail -n 200 appium.log || true; exit 1
-                fi
-                sleep 2
-              done
+            # Sanity: list devices
+            adb devices
 
-              echo "ADB devices:"
-              adb devices
+            # Run your TestNG suite
+            mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test
 
-              echo "Running TestNG suite: ${SUITE_XML}"
-              mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test \
-              || ( echo "First attempt failed, retrying in 30s…"; sleep 30; mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test || (echo "Second attempt failed"; tail -n 200 appium.log || true; exit 1) )
-            '
+            # Stop Appium
+            kill "$(cat appium.pid)" 2>/dev/null || true
 
       - name: Upload test reports
         if: always()
