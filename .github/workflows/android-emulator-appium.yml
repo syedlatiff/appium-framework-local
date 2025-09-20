@@ -37,7 +37,6 @@ jobs:
           appium driver install uiautomator2
           appium -v
 
-      # Optional; keeps emulator fast on GH runners
       - name: Enable KVM group perms
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -66,60 +65,73 @@ jobs:
           disable-animations: true
           script: echo "Generated AVD snapshot for caching."
 
-		  - name: Run Appium Tests with Emulator
-		    uses: reactivecircus/android-emulator-runner@v2
-		    with:
-		      api-level: 29
-		      target: google_apis
-		      arch: x86_64
-		      profile: pixel_3a
-		      force-avd-creation: false
-		      emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
-		      disable-animations: true
-		      script: |
-		        # sh doesn't support 'pipefail'
-		        set -eu
+      - name: Run Appium Tests with Emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          profile: pixel_3a
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
+          disable-animations: true
+          script: |
+            # /bin/sh on this runner doesn't support 'pipefail'
+            set -eu
 
-		        echo "Starting Appium server (no /wd/hub base path)…"
-		        appium --log-level info \
-		               --relaxed-security \
-		               --allow-insecure chromedriver_autodownload \
-		               > appium.log 2>&1 &
-		        APPIUM_PID=$!
+            echo "Starting Appium server (no /wd/hub base path)…"
+            appium --log-level info \
+                   --relaxed-security \
+                   --allow-insecure chromedriver_autodownload \
+                   > appium.log 2>&1 &
+            APPIUM_PID=$!
 
-		        # Always stop Appium on exit
-		        trap 'echo "Stopping Appium ($APPIUM_PID)…"; kill $APPIUM_PID || true' EXIT
+            # Always stop Appium on exit
+            trap 'echo "Stopping Appium ($APPIUM_PID)…"; kill $APPIUM_PID || true' EXIT
 
-		        echo "Waiting for Appium to be ready at /status…"
-		        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-		          if curl -sf http://127.0.0.1:4723/status >/dev/null; then
-		            echo "Appium is up."
-		            break
-		          fi
-		          if ! kill -0 "$APPIUM_PID" 2>/dev/null; then
-		            echo "Appium died early. Last 200 lines:"
-		            tail -n 200 appium.log || true
-		            exit 1
-		          fi
-		          sleep 2
-		        done
+            echo "Waiting for Appium to be ready at /status…"
+            for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+              if curl -sf http://127.0.0.1:4723/status >/dev/null; then
+                echo "Appium is up."
+                break
+              fi
+              if ! kill -0 "$APPIUM_PID" 2>/dev/null; then
+                echo "Appium died early. Last 200 lines:"
+                tail -n 200 appium.log || true
+                exit 1
+              fi
+              sleep 2
+            done
 
-		        echo "ADB devices:"
-		        adb devices
+            echo "ADB devices:"
+            adb devices
 
-		        echo "Running TestNG suite: ${SUITE_XML}"
-		        for attempt in 1 2; do
-		          echo "Attempt $attempt…"
-		          if mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test; then
-		            echo "✅ Tests passed on attempt $attempt"
-		            break
-		          elif [ "$attempt" -eq 2 ]; then
-		            echo "❌ Tests failed after 2 attempts"
-		            echo "---- Appium log tail ----"
-		            tail -n 200 appium.log || true
-		            exit 1
-		          else
-		            echo "⚠️  Attempt $attempt failed, retrying in 30s…"
-		            sleep 30
-		          fi
-		        done
+            echo "Running TestNG suite: ${SUITE_XML}"
+            for attempt in 1 2; do
+              echo "Attempt $attempt…"
+              if mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test; then
+                echo "✅ Tests passed on attempt $attempt"
+                break
+              elif [ "$attempt" -eq 2 ]; then
+                echo "❌ Tests failed after 2 attempts"
+                echo "---- Appium log tail ----"
+                tail -n 200 appium.log || true
+                exit 1
+              else
+                echo "⚠️  Attempt $attempt failed, retrying in 30s…"
+                sleep 30
+              fi
+            done
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ui-test-reports-${{ github.run_number }}
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+            test-output/
+            screenshots/
+            appium.log
+          if-no-files-found: ignore
