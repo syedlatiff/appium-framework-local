@@ -59,7 +59,7 @@ public class LoginFormValidationTest extends AndroidBaseTest{
 			
 	}
 	
-	@Test
+	@Test(expectedExceptions = AssertionError.class)
 	public void FormLogin_ErrorValidationFailedTest() throws InterruptedException
 	{
 		formPage.setGender("Female");

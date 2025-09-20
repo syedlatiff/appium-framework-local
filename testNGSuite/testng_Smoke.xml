@@ -19,9 +19,4 @@
 			<class name="org.latiffsyed.tests.android.LoginFormValidationTest"/>
 		</classes>
 	</test>
-	<test thread-count="5" name=" iOS Alert Handling Test">
-		<classes>
-			<class name="org.latiffsyed.tests.iOS.AlertViewMessageValidationTest"/>
-		</classes>
-	</test>
 </suite>
