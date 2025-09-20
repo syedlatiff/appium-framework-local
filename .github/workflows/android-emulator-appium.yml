@@ -29,12 +29,15 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install Appium globally
+      - name: Install Appium + UiAutomator2
         run: |
+          npm config set fund false
+          npm config set audit false
           npm install -g appium@latest
           appium driver install uiautomator2
           appium -v
 
+      # Optional on GH-hosted runners, but harmless:
       - name: Enable KVM group perms
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -48,7 +51,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-29
+          key: avd-29-pixel3a-google_apis
 
       - name: Create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -74,38 +77,53 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
           disable-animations: true
           script: |
-            echo "Starting Appium server..."
-            appium --log-level info --relaxed-security --allow-insecure chromedriver_autodownload &
+            set -euo pipefail
+
+            echo "Starting Appium server…"
+            # Use /wd/hub base path so client & healthcheck match
+            appium --base-path /wd/hub \
+                   --log-level info \
+                   --relaxed-security \
+                   --allow-insecure chromedriver_autodownload \
+                   > appium.log 2>&1 &
             APPIUM_PID=$!
-            
-            # Wait for Appium to start
-            echo "Waiting for Appium to be ready..."
-            sleep 15
-            
-            # Verify devices and Appium
-            echo "Checking ADB devices:"
+
+            # Always stop Appium on exit
+            trap 'echo "Stopping Appium ($APPIUM_PID)…"; kill $APPIUM_PID || true' EXIT
+
+            echo "Waiting for Appium to be ready…"
+            for i in {1..30}; do
+              if curl -sf http://127.0.0.1:4723/wd/hub/status >/dev/null; then
+                echo "Appium is up."
+                break
+              fi
+              if ! kill -0 $APPIUM_PID 2>/dev/null; then
+                echo "Appium process died early. Last 200 lines:"
+                tail -n 200 appium.log || true
+                exit 1
+              fi
+              sleep 2
+            done
+
+            echo "ADB devices:"
             adb devices
-            echo "Checking Appium status:"
-            curl -s http://localhost:4723/wd/hub/status || echo "Appium status check failed"
-            
-            echo "Running TestNG tests..."
-            # Run tests with retry
+
+            echo "Running TestNG suite: ${SUITE_XML}"
             for attempt in 1 2; do
-              echo "Test attempt $attempt"
-              if mvn -B -ntp -Dtestng.suiteXmlFile="${{ env.SUITE_XML }}" test; then
+              echo "Attempt $attempt…"
+              if mvn -B -ntp -Dtestng.suiteXmlFile="${SUITE_XML}" test; then
                 echo "✅ Tests passed on attempt $attempt"
                 break
-              elif [ $attempt -eq 2 ]; then
+              elif [ "$attempt" -eq 2 ]; then
                 echo "❌ Tests failed after 2 attempts"
+                echo "---- Appium log tail ----"
+                tail -n 200 appium.log || true
                 exit 1
               else
-                echo "⚠️  Test attempt $attempt failed, retrying in 30s..."
+                echo "⚠️  Attempt $attempt failed, retrying in 30s…"
                 sleep 30
               fi
             done
-            
-            # Stop Appium
-            kill $APPIUM_PID || true
 
       - name: Upload test reports
         if: always()
@@ -117,4 +135,5 @@ jobs:
             target/failsafe-reports/
             test-output/
             screenshots/
+            appium.log
           if-no-files-found: ignore
