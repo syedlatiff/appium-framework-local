@@ -1,5 +1,4 @@
-# .github/workflows/android-emulator-appium.yml
-name: Android UI Tests (Appium + Emulator - Manual)
+name: Android UI Tests (Appium + Emulator)
 
 on:
   push:
@@ -10,14 +9,14 @@ on:
 jobs:
   android-ui-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     env:
-      API_LEVEL: "29"
-      TARGET: "google_apis"
-      ARCH: "x86"
-      PROFILE: "pixel_3a"
+      API_LEVEL: "33"  # Changed from 29 to 33 for better compatibility
+      TARGET: "google_apis_playstore"  # Changed to include Google Play Services
+      ARCH: "x86_64"  # Changed to x86_64 for better performance
+      PROFILE: "pixel_5"  # More modern device profile
       SUITE_XML: "testNGSuite/testng_Smoke.xml"
-      AVD_NAME: "test_avd"
+      AVD_NAME: "test_avd_ci"
 
     steps:
       - name: Checkout
@@ -34,160 +33,140 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: 'npm'
 
       - name: Install emulator dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libpulse0 libglu1-mesa mesa-utils libnss3 \
-            net-tools iproute2
+            net-tools qemu-kvm
 
-      - name: Install Appium 3 + UiAutomator2 driver
+      - name: Install Appium
         run: |
-          npm i -g appium@next
+          npm install -g appium@latest
           appium driver install uiautomator2
-          appium -v
+          appium --version
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          build-tools-version: "33.0.0"
+          ndk-version: "25.2.9519653"
+
+      - name: Accept Android licenses
+        run: |
+          yes | sdkmanager --licenses || true
 
       - name: Install system image and create AVD
         run: |
-          # Install system image
+          # Install system image and platform
+          sdkmanager "platforms;android-${{ env.API_LEVEL }}"
           sdkmanager "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}"
+          sdkmanager "platform-tools" "build-tools;33.0.0"
           
-          # Accept licenses
-          yes | sdkmanager --licenses
-          
-          # Create AVD
+          # Create AVD with more memory
           echo "no" | avdmanager create avd \
             --name ${{ env.AVD_NAME }} \
             --package "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" \
-            --device "pixel_3a" \
+            --device "pixel_5" \
             --force
 
-      - name: Configure ADB environment
+      - name: Start emulator with hardware acceleration
         run: |
-          # Set ADB to use TCP instead of USB
-          export ADB_TRACE=all
-          export ADB_LOCAL_TRANSPORT_MAX_PORT=5580
-          
-          # Kill any existing ADB servers
-          adb kill-server
-          pkill -f adb
-          sleep 3
-          
-          # Start ADB server with specific parameters
-          adb start-server
-          echo "ADB server started"
-          adb devices
-
-      - name: Start emulator with explicit ADB connection
-        run: |
-          # Start emulator with explicit ADB server connection
+          # Start emulator with hardware acceleration if available
           emulator -avd ${{ env.AVD_NAME }} \
-            -port 5558 \
             -no-window \
             -no-snapshot \
-            -gpu swiftshader_indirect \
+            -gpu auto \
             -no-boot-anim \
             -noaudio \
-            -verbose \
-            -qemu -tcpdump emulator.pcap \
-            -adb-server tcp:5037 > emulator.log 2>&1 &
+            -memory 4096 \
+            -partition-size 2048 \
+            -netfast \
+            -accel on &
           
           EMULATOR_PID=$!
           echo "EMULATOR_PID=$EMULATOR_PID" >> $GITHUB_ENV
           echo "Emulator started with PID: $EMULATOR_PID"
 
-      - name: Wait and force ADB connection
-        run: |
-          echo "Waiting for emulator to initialize..."
-          sleep 45
-          
-          # Force ADB server restart and connection
-          adb kill-server
-          sleep 5
-          
-          # Start ADB with specific parameters
-          adb -a -P 5037 nodaemon server start &
-          sleep 10
-          
-          # Force connect to emulator
-          echo "Attempting to connect to emulator..."
-          adb connect 127.0.0.1:5558
-          
-          # Check connection repeatedly
-          for i in {1..20}; do
-            echo "Connection attempt $i/20"
-            DEVICES=$(adb devices)
-            echo "Current devices:"
-            echo "$DEVICES"
-            
-            if echo "$DEVICES" | grep -q "127.0.0.1:5558.*device"; then
-              echo "✅ Emulator connected successfully!"
-              break
-            fi
-            
-            # Try reconnecting
-            adb disconnect 127.0.0.1:5558
-            adb connect 127.0.0.1:5558
-            sleep 5
-          done
-          
-          # Final check
-          if adb devices | grep -q "127.0.0.1:5558.*device"; then
-            echo "✅ Connection established!"
-          else
-            echo "❌ Failed to connect to emulator"
-            echo "Network status:"
-            netstat -tulpn || true
-            echo "Emulator log excerpts:"
-            tail -50 emulator.log
-            exit 1
-          fi
-
-      - name: Wait for boot completion
+      - name: Wait for emulator to be ready
         run: |
           echo "Waiting for emulator to boot..."
-          for i in {1..30}; do
-            if adb -s 127.0.0.1:5558 shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+          
+          # Wait for emulator to appear
+          for i in {1..20}; do
+            if adb devices | grep -q "emulator"; then
+              echo "✅ Emulator detected!"
+              break
+            fi
+            echo "Waiting for emulator... ($i/20)"
+            sleep 10
+          done
+          
+          # Wait for boot completion with better checking
+          adb wait-for-device
+          for i in {1..15}; do
+            BOOT_COMPLETED=$(adb shell getprop sys.boot_completed 2>/dev/null || echo "0")
+            if [ "$BOOT_COMPLETED" = "1" ]; then
               echo "✅ Emulator fully booted!"
               break
             fi
-            echo "Boot attempt $i/30 - waiting..."
+            echo "Waiting for boot completion... ($i/15)"
             sleep 5
           done
           
-          adb -s 127.0.0.1:5558 shell getprop
+          # Additional wait for services to stabilize
+          sleep 10
+          
+          # Unlock screen and dismiss setup
+          adb shell input keyevent 82
+          adb shell input keyevent 4
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
 
       - name: Start Appium server
         run: |
           echo "Starting Appium server..."
-          nohup appium --base-path /wd/hub --allow-cors --log-level info > appium.log 2>&1 &
+          # Start Appium with specific host and port
+          appium --host 127.0.0.1 --port 4723 --log-level info --relaxed-security &
           APPIUM_PID=$!
           echo "APPIUM_PID=$APPIUM_PID" >> $GITHUB_ENV
           sleep 15
 
-      - name: Run tests
+      - name: Run tests with CI environment
         run: |
           echo "Running TestNG tests..."
-          mvn -B -ntp -Dtestng.suiteXmlFile="${{ env.SUITE_XML }}" test
+          echo "Current devices:"
+          adb devices -l
+          echo "Device properties:"
+          adb shell getprop | grep -E "(model|version|serial|boot)"
+          
+          # Run tests with CI flag and device property
+          mvn -B -ntp -Dtestng.suiteXmlFile="${{ env.SUITE_XML }}" \
+              -DRUN_ON_BS=false \
+              -DandroidDevice=emulator-5554 \
+              test
 
       - name: Stop services
         if: always()
         run: |
+          echo "Stopping services..."
           adb emu kill || true
           pkill -f emulator || true
+          pkill -f appium || true
           pkill -f adb || true
 
-      - name: Upload reports and logs
+      - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-ui-test-reports
           path: |
-            reports/**
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
             test-output/**
-            appium.log
-            emulator.log
+            **/reports/**
+          if-no-files-found: warn
