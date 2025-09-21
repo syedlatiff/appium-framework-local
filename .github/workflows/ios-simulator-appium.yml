@@ -14,7 +14,7 @@ jobs:
       IOS_SUITE_XML: "testNGSuite/testng_iOS.xml"                 # iOS-only TestNG suite
       APPIUM_URL: "http://127.0.0.1:4723/"
       IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"
-      IOS_TARGET_VERSION: "17.2"                                   # target iOS; falls back to newest available
+      IOS_TARGET_VERSION: "17.2"                                   # prefer 17.2; will fall back to newest iOS
       IOS_TARGET_DEVICE: "iPhone 15 Pro"
 
     steps:
@@ -29,6 +29,7 @@ jobs:
           cache: maven
 
       - name: Install Appium + XCUITest driver
+        shell: bash
         run: |
           set -e
           npm config set fund false
@@ -36,79 +37,79 @@ jobs:
           npm i -g appium@latest
           appium driver install xcuitest
           appium -v
-        shell: bash
 
-      # ---- FIXED: Python calls xcrun directly (no stdin), picks/creates exact simulator ----
+      # ---------- Robust simulator resolution without heredocs ----------
       - name: Resolve simulator (iPhone 15 Pro / iOS 17.2)
         id: resolve-sim
         shell: bash
         run: |
           set -e
-          export V="$IOS_TARGET_VERSION"
-          export DEV_NAME="$IOS_TARGET_DEVICE"
+          cat > resolve_sim.py <<'PY'
+          import json, os, subprocess, sys
 
-          python3 - <<'PY'
-import json, os, subprocess, sys
+          def run_json(cmd):
+              out = subprocess.check_output(cmd, text=True)
+              return json.loads(out)
 
-def run_json(cmd):
-    out = subprocess.check_output(cmd, text=True)
-    return json.loads(out)
+          V = os.environ["IOS_TARGET_VERSION"]
+          DEV_NAME = os.environ["IOS_TARGET_DEVICE"]
 
-print("=== Resolving iOS runtime & device ===")
+          # 1) Runtime: prefer exact iOS V; else newest available iOS
+          runtimes = run_json(["xcrun","simctl","list","runtimes","--json"]).get("runtimes",[])
+          runtime_id = ""
+          for r in runtimes:
+              if r.get("isAvailable") and r.get("platform")=="iOS" and r.get("version")==V:
+                  runtime_id = r["identifier"]; break
+          if not runtime_id:
+              ios = [r for r in runtimes if r.get("isAvailable") and r.get("platform")=="iOS"]
+              if not ios:
+                  print("::error::No iOS runtime found", file=sys.stderr); sys.exit(1)
+              ios.sort(key=lambda x: x.get("version","0"))
+              runtime_id = ios[-1]["identifier"]
 
-# 1) Pick an iOS runtime (prefer exact version V; never tvOS/watchOS)
-runtimes = run_json(["xcrun","simctl","list","runtimes","--json"]).get("runtimes",[])
-runtime_id = ""
-for r in runtimes:
-    if r.get("isAvailable") and r.get("platform")=="iOS" and r.get("version")==os.environ["V"]:
-        runtime_id = r["identifier"]; break
-if not runtime_id:
-    ios = [r for r in runtimes if r.get("isAvailable") and r.get("platform")=="iOS"]
-    if not ios:
-        print("::error::No iOS runtime found", file=sys.stderr); sys.exit(1)
-    ios.sort(key=lambda x: x.get("version","0"))
-    runtime_id = ios[-1]["identifier"]
-print(f"Using runtime: {runtime_id}")
+          # 2) Device type: prefer exact; else first iPhone type
+          devtypes = run_json(["xcrun","simctl","list","devicetypes","--json"]).get("devicetypes",[])
+          devtype_id = ""
+          for t in devtypes:
+              if t.get("name")==DEV_NAME:
+                  devtype_id = t["identifier"]; break
+          if not devtype_id:
+              iphones = [t for t in devtypes if str(t.get("name","")).startswith("iPhone")]
+              if not iphones:
+                  print("::error::No iPhone device type found", file=sys.stderr); sys.exit(1)
+              devtype_id = iphones[0]["identifier"]
 
-# 2) Resolve device type (prefer exact name; else first iPhone)
-devtypes = run_json(["xcrun","simctl","list","devicetypes","--json"]).get("devicetypes",[])
-devtype_id = ""
-for t in devtypes:
-    if t.get("name")==os.environ["DEV_NAME"]:
-        devtype_id = t["identifier"]; break
-if not devtype_id:
-    iphones = [t for t in devtypes if str(t.get("name","")).startswith("iPhone")]
-    if not iphones:
-        print("::error::No iPhone device type found", file=sys.stderr); sys.exit(1)
-    devtype_id = iphones[0]["identifier"]
-print(f"Using device type: {devtype_id}")
+          # 3) Find or create simulator for (runtime_id, devtype_id)
+          devices_by_rt = run_json(["xcrun","simctl","list","devices","--json"]).get("devices",{})
+          udid = ""; name = ""
+          for rt, devs in devices_by_rt.items():
+              if rt != runtime_id: continue
+              for d in devs:
+                  if d.get("isAvailable"):
+                      name = d["name"]; udid = d["udid"]; break
+              if udid: break
 
-# 3) Find or create a simulator for (runtime_id, devtype_id)
-devices_by_rt = run_json(["xcrun","simctl","list","devices","--json"]).get("devices",{})
-udid = ""
-name = ""
-for rt, devs in devices_by_rt.items():
-    if rt != runtime_id: continue
-    for d in devs:
-        if d.get("isAvailable"):
-            name = d["name"]; udid = d["udid"]; break
-    if udid: break
+          if not udid:
+              name = f"CI {DEV_NAME} ({V})"
+              udid = subprocess.check_output(
+                  ["xcrun","simctl","create", name, devtype_id, runtime_id],
+                  text=True
+              ).strip()
 
-if not udid:
-    name = f'CI {os.environ["DEV_NAME"]} ({os.environ["V"]})'
-    udid = subprocess.check_output(["xcrun","simctl","create", name, devtype_id, runtime_id], text=True).strip()
-    print(f"Created simulator: {name} ({udid})")
-else:
-    print(f"Reusing simulator: {name} ({udid})")
+          # Emit GitHub outputs
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"name={name}\n")
+              f.write(f"udid={udid}\n")
+              f.write(f"runtime={runtime_id}\n")
 
-# Emit outputs for later steps
-with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-    f.write(f"name={name}\n")
-    f.write(f"udid={udid}\n")
-    f.write(f"runtime={runtime_id}\n")
-PY
+          print(f"Chosen simulator: {name} ({udid}) runtime={runtime_id}")
+          PY
+
+          python3 resolve_sim.py
+          rm -f resolve_sim.py
 
       - name: Boot iOS Simulator (extended timeout)
+        shell: bash
         run: |
           set -e
           UDID="${{ steps.resolve-sim.outputs.udid }}"
@@ -126,23 +127,23 @@ PY
             sleep 5
           done
           sleep 10
-        shell: bash
 
       - name: Start Appium server
+        shell: bash
         run: |
           set -e
           nohup appium --log-level info --session-override > appium-ios.log 2>&1 & echo $! > appium-ios.pid
           sleep 15
           curl -sf $APPIUM_URL/status || true
-        shell: bash
 
       - name: Show iOS suite (sanity)
+        shell: bash
         run: |
           echo "Using suite: $IOS_SUITE_XML"
           sed -n '1,200p' "$IOS_SUITE_XML" || true
-        shell: bash
 
       - name: Run iOS TestNG suite
+        shell: bash
         run: |
           set -e
           echo "Simulator: ${{ steps.resolve-sim.outputs.name }} (${{ steps.resolve-sim.outputs.udid }})"
@@ -163,13 +164,12 @@ PY
             -Dios.app.path="${IOS_APP_PATH}" \
             -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false \
             test
-        shell: bash
 
       - name: Stop Appium
         if: always()
+        shell: bash
         run: |
           kill "$(cat appium-ios.pid)" 2>/dev/null || true
-        shell: bash
 
       - name: Upload iOS reports
         if: always()
