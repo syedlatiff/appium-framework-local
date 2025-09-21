@@ -64,6 +64,7 @@ public class IOSBaseTest extends AppiumUtils {
         options.setShowXcodeLog(true);
         options.setWdaLaunchTimeout(Duration.ofSeconds(180));
         options.setDerivedDataPath(Paths.get(System.getProperty("java.io.tmpdir"), "wda-derived").toString());
+        options.setSimulatorStartupTimeout(Duration.ofSeconds(300));
 
 
         // .app path (simulator build). System prop can override default path.

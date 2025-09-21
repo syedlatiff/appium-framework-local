@@ -11,9 +11,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
-      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"                 # iOS-only TestNG suite
+      IOS_SUITE_XML: "testNGSuite/testng_iOS.xml"                 # iOS-only TestNG suite
       APPIUM_URL: "http://127.0.0.1:4723/"
-      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # update if needed
+      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # <- update if needed
 
     steps:
       - name: Checkout
@@ -34,6 +34,7 @@ jobs:
           appium driver install xcuitest
           appium -v
 
+      # Pick a real, available iPhone simulator and export its NAME + UDID
       - name: Pick a bootable iPhone Simulator
         id: pick-sim
         run: |
@@ -70,14 +71,44 @@ jobs:
           print(f"Chosen simulator: {found['name']} ({found['udid']})")
           PY
 
-      - name: Boot iOS Simulator
+      # Robust boot: erase -> boot -> launch Simulator UI -> wait until fully Booted
+      - name: Boot iOS Simulator (erase, launch UI, wait)
         run: |
           set -e
           UDID="${{ steps.pick-sim.outputs.udid }}"
-          echo "Booting $UDID"
+          echo "Resetting and booting simulator $UDID"
+
+          # Ensure no other sims are running
+          xcrun simctl shutdown all || true
+
+          # Erase the chosen sim to avoid stale state
+          xcrun simctl erase "$UDID" || true
+
+          # Boot and open the Simulator app pointing to this UDID
           xcrun simctl boot "$UDID" || true
+          open -a Simulator --args -CurrentDeviceUDID "$UDID"
+
+          # Block until boot completed; then poll for Booted state as extra safety
           xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl list | grep -A1 "Booted" || true
+          for i in {1..30}; do
+            STATE=$(xcrun simctl list --json devices | /usr/bin/python3 - <<'PY'
+import json,sys,os
+udid=os.environ.get("UDID")
+data=json.load(sys.stdin)
+for devs in data.get("devices",{}).values():
+  for d in devs:
+    if d.get("udid")==udid:
+      print(d.get("state",""))
+      sys.exit(0)
+print("")
+PY
+)
+            echo "Simulator state: $STATE"
+            if [ "$STATE" = "Booted" ]; then
+              break
+            fi
+            sleep 5
+          done
 
       - name: Start Appium server
         run: |
