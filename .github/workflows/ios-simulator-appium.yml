@@ -40,41 +40,44 @@ jobs:
         id: pick-sim
         run: |
           set -e
-          # Get list of available devices in JSON
-          JSON="$(xcrun simctl list --json devices available)"
-          # Prefer newer models first
-          for MODEL in "iPhone 16 Pro" "iPhone 16" "iPhone 15 Pro" "iPhone 15" "iPhone 14 Pro" "iPhone 14"; do
-            NAME="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); 
-for lst in d.get("devices",{}).values():
-  for x in lst:
-    if x.get("name")==sys.argv[1] and x.get("isAvailable",True) and x.get("state") in ("Shutdown","Booted"):
-      print(x["name"]); sys.exit(0)
-print("")' "$MODEL" <<<"$JSON")"
-            if [ -n "$NAME" ]; then break; fi
-          done
-          if [ -z "$NAME" ]; then
-            # Fallback: any available iPhone
-            NAME="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read());
-for lst in d.get("devices",{}).values():
-  for x in lst:
-    if str(x.get("name","")).startswith("iPhone") and x.get("isAvailable",True) and x.get("state") in ("Shutdown","Booted"):
-      print(x["name"]); sys.exit(0)
-print("")' <<<"$JSON")"
-          fi
-          if [ -z "$NAME" ]; then
-            echo "::error::No suitable iPhone simulator found"
-            exit 1
-          fi
-          # Resolve UDID for the chosen name
-          UDID="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read());
-nm=sys.argv[1]
-for lst in d.get("devices",{}).values():
-  for x in lst:
-    if x.get("name")==nm and x.get("isAvailable",True) and x.get("state") in ("Shutdown","Booted"):
-      print(x["udid"]); sys.exit(0)' "$NAME" <<<"$JSON")"
-          echo "Chosen simulator: $NAME ($UDID)"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          # Get available devices as JSON
+          data = json.loads(subprocess.check_output(
+              ["xcrun","simctl","list","--json","devices","available"]
+          ))
+          preferred = ["iPhone 16 Pro","iPhone 16","iPhone 15 Pro","iPhone 15","iPhone 14 Pro","iPhone 14"]
+          found = None
+
+          # Try preferred list
+          for want in preferred:
+              for devs in data.get("devices", {}).values():
+                  for d in devs:
+                      if d.get("name")==want and d.get("isAvailable", True) and d.get("state") in ("Shutdown","Booted"):
+                          found = d
+                          break
+                  if found: break
+              if found: break
+
+          # Fallback: any available iPhone
+          if not found:
+              for devs in data.get("devices", {}).values():
+                  for d in devs:
+                      if str(d.get("name","")).startswith("iPhone") and d.get("isAvailable", True) and d.get("state") in ("Shutdown","Booted"):
+                          found = d
+                          break
+                  if found: break
+
+          if not found:
+              print("::error::No suitable iPhone simulator found", file=sys.stderr)
+              sys.exit(1)
+
+          # Emit outputs for later steps
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"name={found['name']}\n")
+              f.write(f"udid={found['udid']}\n")
+          print(f"Chosen simulator: {found['name']} ({found['udid']})")
+          PY
         shell: bash
 
       - name: Boot iOS Simulator (erase, launch UI, wait)
@@ -82,15 +85,12 @@ for lst in d.get("devices",{}).values():
           set -e
           UDID="${{ steps.pick-sim.outputs.udid }}"
           echo "Resetting and booting simulator $UDID"
-
           # Ensure no other sims are running and erase the chosen one to avoid stale state
           xcrun simctl shutdown all || true
           xcrun simctl erase "$UDID" || true
-
           # Boot and open the Simulator app pointing to this UDID
           xcrun simctl boot "$UDID" || true
           open -a Simulator --args -CurrentDeviceUDID "$UDID"
-
           # Wait until the device reports Booted (extra polling for reliability)
           xcrun simctl bootstatus "$UDID" -b
           for i in $(seq 1 30); do
