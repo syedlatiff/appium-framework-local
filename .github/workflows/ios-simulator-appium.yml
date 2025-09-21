@@ -9,11 +9,11 @@ on:
 jobs:
   ios-simulator-tests:
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60  # Increased from 45 for stability
     env:
-      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"                 # iOS-only TestNG suite
+      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"
       APPIUM_URL: "http://127.0.0.1:4723/"
-      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # update if needed
+      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"
       IOS_TARGET_VERSION: "17.5"
       IOS_TARGET_DEVICE: "iPhone 15 Pro"
 
@@ -38,8 +38,6 @@ jobs:
           appium -v
         shell: bash
 
-      # Resolve iOS 17.5 runtime (never tvOS/watchOS), resolve device type for iPhone 15 Pro,
-      # then find/create a simulator and export NAME/UDID/RUNTIME.
       - name: Resolve simulator (iPhone 15 Pro / iOS 17.5)
         id: resolve-sim
         run: |
@@ -49,21 +47,21 @@ jobs:
 
           echo "Looking for iOS runtime $V …"
           RUNTIME_ID="$(xcrun simctl list runtimes --json | python3 - <<'PY'
-import json,sys,os
-target=os.environ["V"]
-data=json.load(sys.stdin)
-# Prefer an exact iOS-V match
-for r in data.get("runtimes",[]):
-  if r.get("isAvailable") and r.get("platform")=="iOS" and r.get("version")==target:
-    print(r["identifier"]); sys.exit(0)
-# Fallback: newest available iOS runtime
-cands=[r for r in data.get("runtimes",[]) if r.get("isAvailable") and r.get("platform")=="iOS"]
-if cands:
-  # sort by version string, not perfect but good enough; newer are last
-  cands=sorted(cands, key=lambda x: x.get("version","0"))
-  print(cands[-1]["identifier"])
-PY
-)" || true
+          import json,sys,os
+          target=os.environ["V"]
+          data=json.load(sys.stdin)
+          # Prefer an exact iOS-V match
+          for r in data.get("runtimes",[]):
+            if r.get("isAvailable") and r.get("platform")=="iOS" and r.get("version")==target:
+              print(r["identifier"]); sys.exit(0)
+          # Fallback: newest available iOS runtime
+          cands=[r for r in data.get("runtimes",[]) if r.get("isAvailable") and r.get("platform")=="iOS"]
+          if cands:
+            # sort by version string, not perfect but good enough; newer are last
+            cands=sorted(cands, key=lambda x: x.get("version","0"))
+            print(cands[-1]["identifier"])
+          PY
+          )" || true
 
           if [ -z "$RUNTIME_ID" ]; then
             echo "::warning::No iOS runtime found at all"; exit 1
@@ -72,27 +70,27 @@ PY
 
           echo "Resolving device type for: $DEV_NAME"
           DEV_TYPE_ID="$(xcrun simctl list devicetypes --json | python3 - <<'PY'
-import json,sys,os
-name=os.environ["DEV_NAME"]
-d=json.load(sys.stdin)
-for t in d.get("devicetypes",[]):
-  if t.get("name")==name:
-    print(t["identifier"]); sys.exit(0)
-print("")  # not found
-PY
-)" || true
+          import json,sys,os
+          name=os.environ["DEV_NAME"]
+          d=json.load(sys.stdin)
+          for t in d.get("devicetypes",[]):
+            if t.get("name")==name:
+              print(t["identifier"]); sys.exit(0)
+          print("")  # not found
+          PY
+          )" || true
 
           if [ -z "$DEV_TYPE_ID" ]; then
             echo "::warning::Device type '$DEV_NAME' not found; using the first iPhone device type available"
             DEV_TYPE_ID="$(xcrun simctl list devicetypes --json | python3 - <<'PY'
-import json,sys
-d=json.load(sys.stdin)
-for t in d.get("devicetypes",[]):
-  if str(t.get("name","")).startswith("iPhone"):
-    print(t["identifier"]); sys.exit(0)
-print("")
-PY
-)"
+            import json,sys
+            d=json.load(sys.stdin)
+            for t in d.get("devicetypes",[]):
+              if str(t.get("name","")).startswith("iPhone"):
+                print(t["identifier"]); sys.exit(0)
+            print("")
+            PY
+            )"
           fi
 
           if [ -z "$DEV_TYPE_ID" ]; then
@@ -102,17 +100,17 @@ PY
 
           # Try to find existing device matching DEV_TYPE_ID + RUNTIME_ID
           EXISTING="$(xcrun simctl list --json devices | python3 - <<'PY'
-import json,sys,os
-runtime=os.environ["RUNTIME_ID"]
-d=json.load(sys.stdin)
-for rtid,devs in d.get("devices",{}).items():
-  if rtid!=runtime: continue
-  for dev in devs:
-    if dev.get("isAvailable"):
-      print(dev["name"]+"|"+dev["udid"]); sys.exit(0)
-print("")
-PY
-)" || true
+          import json,sys,os
+          runtime=os.environ["RUNTIME_ID"]
+          d=json.load(sys.stdin)
+          for rtid,devs in d.get("devices",{}).items():
+            if rtid!=runtime: continue
+            for dev in devs:
+              if dev.get("isAvailable"):
+                print(dev["name"]+"|"+dev["udid"]); sys.exit(0)
+          print("")
+          PY
+          )" || true
 
           if [ -n "$EXISTING" ]; then
             NAME="${EXISTING%%|*}"
@@ -129,7 +127,7 @@ PY
           echo "runtime=$RUNTIME_ID" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      - name: Boot iOS Simulator (erase, launch UI, wait)
+      - name: Boot iOS Simulator (extended timeout)
         run: |
           set -e
           UDID="${{ steps.resolve-sim.outputs.udid }}"
@@ -138,20 +136,24 @@ PY
           xcrun simctl erase "$UDID" || true
           xcrun simctl boot "$UDID" || true
           open -a Simulator --args -CurrentDeviceUDID "$UDID"
-          xcrun simctl bootstatus "$UDID" -b
-          for i in $(seq 1 30); do
+          
+          # Extended timeout - 5 minutes instead of 2.5
+          for i in $(seq 1 60); do
             STATE="$(xcrun simctl list devices | grep "$UDID" | sed -E 's/.*\((Booted|Shutdown)\).*/\1/' | tail -n1)"
-            echo "Simulator state: ${STATE:-unknown}"
+            echo "[$i/60] Simulator state: ${STATE:-unknown}"
             [ "$STATE" = "Booted" ] && break
             sleep 5
           done
+          
+          # Extra wait for UI readiness
+          sleep 10
         shell: bash
 
       - name: Start Appium server
         run: |
           set -e
-          nohup appium --log-level info > appium-ios.log 2>&1 & echo $! > appium-ios.pid
-          sleep 10
+          nohup appium --log-level info --session-override > appium-ios.log 2>&1 & echo $! > appium-ios.pid
+          sleep 15  # Increased from 10 for better stability
           curl -sf $APPIUM_URL/status || true
         shell: bash
 
