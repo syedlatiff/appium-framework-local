@@ -11,9 +11,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
-      IOS_SUITE_XML: "testNGSuite/testng_iOS.xml"                 # iOS-only TestNG suite
+      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"                  # iOS-only TestNG suite
       APPIUM_URL: "http://127.0.0.1:4723/"
-      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # <- update if needed
+      IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # update if needed
 
     steps:
       - name: Checkout
@@ -33,8 +33,8 @@ jobs:
           npm i -g appium@latest
           appium driver install xcuitest
           appium -v
+        shell: bash
 
-      # Pick a real, available iPhone simulator and export its NAME + UDID
       - name: Pick a bootable iPhone Simulator
         id: pick-sim
         run: |
@@ -43,8 +43,6 @@ jobs:
           data = json.loads(subprocess.check_output(["xcrun","simctl","list","--json","devices","available"]))
           preferred = ["iPhone 16 Pro","iPhone 16","iPhone 15 Pro","iPhone 15","iPhone 14 Pro","iPhone 14"]
           found = None
-
-          # Try preferred models first
           for want in preferred:
               for devs in data.get("devices", {}).values():
                   for d in devs:
@@ -52,45 +50,33 @@ jobs:
                           found = d; break
                   if found: break
               if found: break
-
-          # Otherwise, any available iPhone
           if not found:
               for devs in data.get("devices", {}).values():
                   for d in devs:
                       if str(d.get("name","")).startswith("iPhone") and d.get("isAvailable",True) and d.get("state") in ("Shutdown","Booted"):
                           found = d; break
                   if found: break
-
           if not found:
               print("::error::No suitable iPhone simulator found", file=sys.stderr)
               sys.exit(1)
-
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"name={found['name']}\n")
               f.write(f"udid={found['udid']}\n")
           print(f"Chosen simulator: {found['name']} ({found['udid']})")
           PY
+        shell: bash
 
-      # Robust boot: erase -> boot -> launch Simulator UI -> wait until fully Booted
       - name: Boot iOS Simulator (erase, launch UI, wait)
         run: |
           set -e
           UDID="${{ steps.pick-sim.outputs.udid }}"
           echo "Resetting and booting simulator $UDID"
-
-          # Ensure no other sims are running
           xcrun simctl shutdown all || true
-
-          # Erase the chosen sim to avoid stale state
           xcrun simctl erase "$UDID" || true
-
-          # Boot and open the Simulator app pointing to this UDID
           xcrun simctl boot "$UDID" || true
           open -a Simulator --args -CurrentDeviceUDID "$UDID"
-
-          # Block until boot completed; then poll for Booted state as extra safety
           xcrun simctl bootstatus "$UDID" -b
-          for i in {1..30}; do
+          for i in $(seq 1 30); do
             STATE=$(xcrun simctl list --json devices | /usr/bin/python3 - <<'PY'
 import json,sys,os
 udid=os.environ.get("UDID")
@@ -104,28 +90,32 @@ print("")
 PY
 )
             echo "Simulator state: $STATE"
-            if [ "$STATE" = "Booted" ]; then
-              break
-            fi
+            if [ "$STATE" = "Booted" ]; then break; fi
             sleep 5
           done
+        shell: bash
 
       - name: Start Appium server
         run: |
           nohup appium --log-level info > appium-ios.log 2>&1 & echo $! > appium-ios.pid
           sleep 10
           curl -sf $APPIUM_URL/status || true
+        shell: bash
 
       - name: Show iOS suite (sanity)
         run: |
           echo "Using suite: $IOS_SUITE_XML"
           sed -n '1,200p' "$IOS_SUITE_XML" || true
+        shell: bash
 
       - name: Run iOS TestNG suite
         run: |
           echo "Chosen simulator: ${{ steps.pick-sim.outputs.name }} (${{ steps.pick-sim.outputs.udid }})"
           echo "Using .app at: ${IOS_APP_PATH}"
-          test -d "${IOS_APP_PATH}" || { echo "::error::.app not found at ${IOS_APP_PATH}"; exit 1; }
+          if [ ! -d "${IOS_APP_PATH}" ]; then
+            echo "::error::.app not found at ${IOS_APP_PATH}"
+            exit 1
+          fi
           /usr/bin/find "${IOS_APP_PATH}" -maxdepth 2 -type f | sed -n '1,40p'
 
           mvn -B -ntp \
@@ -136,11 +126,13 @@ PY
             -Dios.app.path="${IOS_APP_PATH}" \
             -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false \
             test
+        shell: bash
 
       - name: Stop Appium
         if: always()
         run: |
           kill "$(cat appium-ios.pid)" 2>/dev/null || true
+        shell: bash
 
       - name: Upload iOS reports
         if: always()

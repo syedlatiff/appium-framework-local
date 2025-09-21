@@ -46,10 +46,11 @@ public class IOSBaseTest extends AppiumUtils {
         XCUITestOptions options = new XCUITestOptions();
 
         // Device/simulator (system props override data.properties)
-        String deviceName = System.getProperty("ios.device", prop.getProperty("iOSDeviceName", "iPhone 15"));
+        String deviceName = System.getProperty("ios.device", prop.getProperty("iOSDeviceName", "iPhone 15 Pro"));
         options.setDeviceName(deviceName);
 
-        String platformVersion = System.getProperty("ios.platformVersion", prop.getProperty("iOSPlatformVersion", ""));
+        String platformVersion = System.getProperty("ios.platformVersion", prop.getProperty("iOSPlatformVersion", "17.5"));
+        
         if (!platformVersion.isBlank()) {
             options.setPlatformVersion(platformVersion);  // optional in CI
         }
