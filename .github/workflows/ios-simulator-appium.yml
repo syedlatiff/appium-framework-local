@@ -142,7 +142,7 @@ jobs:
           echo "Using suite: $IOS_SUITE_XML"
           sed -n '1,200p' "$IOS_SUITE_XML" || true
 
-      - name: Run iOS TestNG suite
+      - name: Run iOS Only Appium TestNG suite with simulator
         shell: bash
         run: |
           set -e
