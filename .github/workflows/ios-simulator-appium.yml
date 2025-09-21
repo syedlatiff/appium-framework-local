@@ -11,10 +11,10 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60  # Increased from 45 for stability
     env:
-      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"
+      IOS_SUITE_XML: "testNGSuite/testng_iOS.xml"
       APPIUM_URL: "http://127.0.0.1:4723/"
       IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"
-      IOS_TARGET_VERSION: "17.5"
+      IOS_TARGET_VERSION: "17.2"  # Changed from 17.5 to more stable version
       IOS_TARGET_DEVICE: "iPhone 15 Pro"
 
     steps:
@@ -38,12 +38,21 @@ jobs:
           appium -v
         shell: bash
 
-      - name: Resolve simulator (iPhone 15 Pro / iOS 17.5)
+      - name: Resolve simulator (iPhone 15 Pro / iOS 17.2)
         id: resolve-sim
         run: |
           set -e
           V="$IOS_TARGET_VERSION"
           DEV_NAME="$IOS_TARGET_DEVICE"
+
+          echo "=== Available iOS Runtimes ==="
+          xcrun simctl list runtimes --json | python3 - <<'PY'
+          import json,sys
+          data=json.load(sys.stdin)
+          for r in data.get("runtimes",[]):
+            if r.get("platform")=="iOS":
+              print(f"  {r.get('name')} - {r.get('version')} - Available: {r.get('isAvailable')}")
+          PY
 
           echo "Looking for iOS runtime $V …"
           RUNTIME_ID="$(xcrun simctl list runtimes --json | python3 - <<'PY'
@@ -60,11 +69,16 @@ jobs:
             # sort by version string, not perfect but good enough; newer are last
             cands=sorted(cands, key=lambda x: x.get("version","0"))
             print(cands[-1]["identifier"])
+          else:
+            print("")  # No runtime found
           PY
           )" || true
 
           if [ -z "$RUNTIME_ID" ]; then
-            echo "::warning::No iOS runtime found at all"; exit 1
+            echo "::error::No iOS runtime found at all"
+            echo "Available runtimes:"
+            xcrun simctl list runtimes
+            exit 1
           fi
           echo "Using runtime: $RUNTIME_ID"
 
