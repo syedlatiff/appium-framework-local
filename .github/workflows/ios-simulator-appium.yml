@@ -11,9 +11,11 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
-      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"                  # iOS-only TestNG suite
+      IOS_SUITE_XML: "testNGSuite/testng_ios.xml"                 # iOS-only TestNG suite
       APPIUM_URL: "http://127.0.0.1:4723/"
       IOS_APP_PATH: "src/test/java/org/latiffsyed/resources/UIKitCatalog.app"  # update if needed
+      IOS_TARGET_VERSION: "17.5"
+      IOS_TARGET_DEVICE: "iPhone 15 Pro"
 
     steps:
       - name: Checkout
@@ -36,62 +38,106 @@ jobs:
           appium -v
         shell: bash
 
-      - name: Pick a bootable iPhone Simulator
-        id: pick-sim
+      # Resolve iOS 17.5 runtime (never tvOS/watchOS), resolve device type for iPhone 15 Pro,
+      # then find/create a simulator and export NAME/UDID/RUNTIME.
+      - name: Resolve simulator (iPhone 15 Pro / iOS 17.5)
+        id: resolve-sim
         run: |
           set -e
-          python3 - <<'PY'
-          import json, os, subprocess, sys
-          # Get available devices as JSON
-          data = json.loads(subprocess.check_output(
-              ["xcrun","simctl","list","--json","devices","available"]
-          ))
-          preferred = ["iPhone 16 Pro","iPhone 16","iPhone 15 Pro","iPhone 15","iPhone 14 Pro","iPhone 14"]
-          found = None
+          V="$IOS_TARGET_VERSION"
+          DEV_NAME="$IOS_TARGET_DEVICE"
 
-          # Try preferred list
-          for want in preferred:
-              for devs in data.get("devices", {}).values():
-                  for d in devs:
-                      if d.get("name")==want and d.get("isAvailable", True) and d.get("state") in ("Shutdown","Booted"):
-                          found = d
-                          break
-                  if found: break
-              if found: break
+          echo "Looking for iOS runtime $V …"
+          RUNTIME_ID="$(xcrun simctl list runtimes --json | python3 - <<'PY'
+import json,sys,os
+target=os.environ["V"]
+data=json.load(sys.stdin)
+# Prefer an exact iOS-V match
+for r in data.get("runtimes",[]):
+  if r.get("isAvailable") and r.get("platform")=="iOS" and r.get("version")==target:
+    print(r["identifier"]); sys.exit(0)
+# Fallback: newest available iOS runtime
+cands=[r for r in data.get("runtimes",[]) if r.get("isAvailable") and r.get("platform")=="iOS"]
+if cands:
+  # sort by version string, not perfect but good enough; newer are last
+  cands=sorted(cands, key=lambda x: x.get("version","0"))
+  print(cands[-1]["identifier"])
+PY
+)" || true
 
-          # Fallback: any available iPhone
-          if not found:
-              for devs in data.get("devices", {}).values():
-                  for d in devs:
-                      if str(d.get("name","")).startswith("iPhone") and d.get("isAvailable", True) and d.get("state") in ("Shutdown","Booted"):
-                          found = d
-                          break
-                  if found: break
+          if [ -z "$RUNTIME_ID" ]; then
+            echo "::warning::No iOS runtime found at all"; exit 1
+          fi
+          echo "Using runtime: $RUNTIME_ID"
 
-          if not found:
-              print("::error::No suitable iPhone simulator found", file=sys.stderr)
-              sys.exit(1)
+          echo "Resolving device type for: $DEV_NAME"
+          DEV_TYPE_ID="$(xcrun simctl list devicetypes --json | python3 - <<'PY'
+import json,sys,os
+name=os.environ["DEV_NAME"]
+d=json.load(sys.stdin)
+for t in d.get("devicetypes",[]):
+  if t.get("name")==name:
+    print(t["identifier"]); sys.exit(0)
+print("")  # not found
+PY
+)" || true
 
-          # Emit outputs for later steps
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"name={found['name']}\n")
-              f.write(f"udid={found['udid']}\n")
-          print(f"Chosen simulator: {found['name']} ({found['udid']})")
-          PY
+          if [ -z "$DEV_TYPE_ID" ]; then
+            echo "::warning::Device type '$DEV_NAME' not found; using the first iPhone device type available"
+            DEV_TYPE_ID="$(xcrun simctl list devicetypes --json | python3 - <<'PY'
+import json,sys
+d=json.load(sys.stdin)
+for t in d.get("devicetypes",[]):
+  if str(t.get("name","")).startswith("iPhone"):
+    print(t["identifier"]); sys.exit(0)
+print("")
+PY
+)"
+          fi
+
+          if [ -z "$DEV_TYPE_ID" ]; then
+            echo "::error::No iPhone device type found"
+            exit 1
+          fi
+
+          # Try to find existing device matching DEV_TYPE_ID + RUNTIME_ID
+          EXISTING="$(xcrun simctl list --json devices | python3 - <<'PY'
+import json,sys,os
+runtime=os.environ["RUNTIME_ID"]
+d=json.load(sys.stdin)
+for rtid,devs in d.get("devices",{}).items():
+  if rtid!=runtime: continue
+  for dev in devs:
+    if dev.get("isAvailable"):
+      print(dev["name"]+"|"+dev["udid"]); sys.exit(0)
+print("")
+PY
+)" || true
+
+          if [ -n "$EXISTING" ]; then
+            NAME="${EXISTING%%|*}"
+            UDID="${EXISTING##*|}"
+            echo "Reusing existing simulator: $NAME ($UDID)"
+          else
+            NAME="CI ${DEV_NAME} (${IOS_TARGET_VERSION})"
+            echo "Creating simulator: $NAME"
+            UDID="$(xcrun simctl create "$NAME" "$DEV_TYPE_ID" "$RUNTIME_ID")"
+          fi
+
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "runtime=$RUNTIME_ID" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Boot iOS Simulator (erase, launch UI, wait)
         run: |
           set -e
-          UDID="${{ steps.pick-sim.outputs.udid }}"
+          UDID="${{ steps.resolve-sim.outputs.udid }}"
           echo "Resetting and booting simulator $UDID"
-          # Ensure no other sims are running and erase the chosen one to avoid stale state
           xcrun simctl shutdown all || true
           xcrun simctl erase "$UDID" || true
-          # Boot and open the Simulator app pointing to this UDID
           xcrun simctl boot "$UDID" || true
           open -a Simulator --args -CurrentDeviceUDID "$UDID"
-          # Wait until the device reports Booted (extra polling for reliability)
           xcrun simctl bootstatus "$UDID" -b
           for i in $(seq 1 30); do
             STATE="$(xcrun simctl list devices | grep "$UDID" | sed -E 's/.*\((Booted|Shutdown)\).*/\1/' | tail -n1)"
@@ -118,7 +164,8 @@ jobs:
       - name: Run iOS TestNG suite
         run: |
           set -e
-          echo "Chosen simulator: ${{ steps.pick-sim.outputs.name }} (${{ steps.pick-sim.outputs.udid }})"
+          echo "Simulator: ${{ steps.resolve-sim.outputs.name }} (${{ steps.resolve-sim.outputs.udid }})"
+          echo "Runtime:   ${{ steps.resolve-sim.outputs.runtime }}"
           echo "Using .app at: ${IOS_APP_PATH}"
           if [ ! -d "${IOS_APP_PATH}" ]; then
             echo "::error::.app not found at ${IOS_APP_PATH}"
@@ -129,8 +176,9 @@ jobs:
           mvn -B -ntp \
             -Dsurefire.suiteXmlFiles=${IOS_SUITE_XML} \
             -DREMOTE_URL=${APPIUM_URL} \
-            "-Dios.device=${{ steps.pick-sim.outputs.name }}" \
-            "-Dios.udid=${{ steps.pick-sim.outputs.udid }}" \
+            "-Dios.device=${IOS_TARGET_DEVICE}" \
+            "-Dios.platformVersion=${IOS_TARGET_VERSION}" \
+            "-Dios.udid=${{ steps.resolve-sim.outputs.udid }}" \
             -Dios.app.path="${IOS_APP_PATH}" \
             -Dsurefire.useFile=false -Dsurefire.printSummary=true -Dsurefire.trimStackTrace=false \
             test
