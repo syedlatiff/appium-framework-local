@@ -28,6 +28,7 @@ jobs:
 
       - name: Install Appium + XCUITest driver
         run: |
+          set -e
           npm config set fund false
           npm config set audit false
           npm i -g appium@latest
@@ -38,32 +39,42 @@ jobs:
       - name: Pick a bootable iPhone Simulator
         id: pick-sim
         run: |
-          python3 - <<'PY'
-          import json, os, subprocess, sys
-          data = json.loads(subprocess.check_output(["xcrun","simctl","list","--json","devices","available"]))
-          preferred = ["iPhone 16 Pro","iPhone 16","iPhone 15 Pro","iPhone 15","iPhone 14 Pro","iPhone 14"]
-          found = None
-          for want in preferred:
-              for devs in data.get("devices", {}).values():
-                  for d in devs:
-                      if d.get("name")==want and d.get("isAvailable",True) and d.get("state") in ("Shutdown","Booted"):
-                          found = d; break
-                  if found: break
-              if found: break
-          if not found:
-              for devs in data.get("devices", {}).values():
-                  for d in devs:
-                      if str(d.get("name","")).startswith("iPhone") and d.get("isAvailable",True) and d.get("state") in ("Shutdown","Booted"):
-                          found = d; break
-                  if found: break
-          if not found:
-              print("::error::No suitable iPhone simulator found", file=sys.stderr)
-              sys.exit(1)
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"name={found['name']}\n")
-              f.write(f"udid={found['udid']}\n")
-          print(f"Chosen simulator: {found['name']} ({found['udid']})")
-          PY
+          set -e
+          # Get list of available devices in JSON
+          JSON="$(xcrun simctl list --json devices available)"
+          # Prefer newer models first
+          for MODEL in "iPhone 16 Pro" "iPhone 16" "iPhone 15 Pro" "iPhone 15" "iPhone 14 Pro" "iPhone 14"; do
+            NAME="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); 
+for lst in d.get("devices",{}).values():
+  for x in lst:
+    if x.get("name")==sys.argv[1] and x.get("isAvailable",True) and x.get("state") in ("Shutdown","Booted"):
+      print(x["name"]); sys.exit(0)
+print("")' "$MODEL" <<<"$JSON")"
+            if [ -n "$NAME" ]; then break; fi
+          done
+          if [ -z "$NAME" ]; then
+            # Fallback: any available iPhone
+            NAME="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read());
+for lst in d.get("devices",{}).values():
+  for x in lst:
+    if str(x.get("name","")).startswith("iPhone") and x.get("isAvailable",True) and x.get("state") in ("Shutdown","Booted"):
+      print(x["name"]); sys.exit(0)
+print("")' <<<"$JSON")"
+          fi
+          if [ -z "$NAME" ]; then
+            echo "::error::No suitable iPhone simulator found"
+            exit 1
+          fi
+          # Resolve UDID for the chosen name
+          UDID="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read());
+nm=sys.argv[1]
+for lst in d.get("devices",{}).values():
+  for x in lst:
+    if x.get("name")==nm and x.get("isAvailable",True) and x.get("state") in ("Shutdown","Booted"):
+      print(x["udid"]); sys.exit(0)' "$NAME" <<<"$JSON")"
+          echo "Chosen simulator: $NAME ($UDID)"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Boot iOS Simulator (erase, launch UI, wait)
@@ -71,32 +82,28 @@ jobs:
           set -e
           UDID="${{ steps.pick-sim.outputs.udid }}"
           echo "Resetting and booting simulator $UDID"
+
+          # Ensure no other sims are running and erase the chosen one to avoid stale state
           xcrun simctl shutdown all || true
           xcrun simctl erase "$UDID" || true
+
+          # Boot and open the Simulator app pointing to this UDID
           xcrun simctl boot "$UDID" || true
           open -a Simulator --args -CurrentDeviceUDID "$UDID"
+
+          # Wait until the device reports Booted (extra polling for reliability)
           xcrun simctl bootstatus "$UDID" -b
           for i in $(seq 1 30); do
-            STATE=$(xcrun simctl list --json devices | /usr/bin/python3 - <<'PY'
-import json,sys,os
-udid=os.environ.get("UDID")
-data=json.load(sys.stdin)
-for devs in data.get("devices",{}).values():
-  for d in devs:
-    if d.get("udid")==udid:
-      print(d.get("state",""))
-      sys.exit(0)
-print("")
-PY
-)
-            echo "Simulator state: $STATE"
-            if [ "$STATE" = "Booted" ]; then break; fi
+            STATE="$(xcrun simctl list devices | grep "$UDID" | sed -E 's/.*\((Booted|Shutdown)\).*/\1/' | tail -n1)"
+            echo "Simulator state: ${STATE:-unknown}"
+            [ "$STATE" = "Booted" ] && break
             sleep 5
           done
         shell: bash
 
       - name: Start Appium server
         run: |
+          set -e
           nohup appium --log-level info > appium-ios.log 2>&1 & echo $! > appium-ios.pid
           sleep 10
           curl -sf $APPIUM_URL/status || true
@@ -110,6 +117,7 @@ PY
 
       - name: Run iOS TestNG suite
         run: |
+          set -e
           echo "Chosen simulator: ${{ steps.pick-sim.outputs.name }} (${{ steps.pick-sim.outputs.udid }})"
           echo "Using .app at: ${IOS_APP_PATH}"
           if [ ! -d "${IOS_APP_PATH}" ]; then
