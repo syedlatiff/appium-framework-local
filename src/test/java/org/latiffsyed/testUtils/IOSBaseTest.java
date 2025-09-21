@@ -61,7 +61,10 @@ public class IOSBaseTest extends AppiumUtils {
         }
 
         options.setAutomationName("XCUITest");
-        options.setWdaLaunchTimeout(Duration.ofSeconds(120));
+        options.setShowXcodeLog(true);
+        options.setWdaLaunchTimeout(Duration.ofSeconds(180));
+        options.setDerivedDataPath(Paths.get(System.getProperty("java.io.tmpdir"), "wda-derived").toString());
+
 
         // .app path (simulator build). System prop can override default path.
         String defaultAppPath = Paths.get(System.getProperty("user.dir"),

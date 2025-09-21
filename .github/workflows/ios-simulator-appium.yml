@@ -34,7 +34,6 @@ jobs:
           appium driver install xcuitest
           appium -v
 
-      # Pick a real, available iPhone simulator and export its NAME + UDID
       - name: Pick a bootable iPhone Simulator
         id: pick-sim
         run: |
@@ -65,7 +64,6 @@ jobs:
               print("::error::No suitable iPhone simulator found", file=sys.stderr)
               sys.exit(1)
 
-          # Write outputs for later steps
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"name={found['name']}\n")
               f.write(f"udid={found['udid']}\n")
@@ -94,11 +92,10 @@ jobs:
 
       - name: Run iOS TestNG suite
         run: |
+          echo "Chosen simulator: ${{ steps.pick-sim.outputs.name }} (${{ steps.pick-sim.outputs.udid }})"
           echo "Using .app at: ${IOS_APP_PATH}"
-          if [ ! -d "${IOS_APP_PATH}" ]; then
-            echo "::error::.app not found at ${IOS_APP_PATH}"; exit 1
-          fi
-          ls -ld "${IOS_APP_PATH}"
+          test -d "${IOS_APP_PATH}" || { echo "::error::.app not found at ${IOS_APP_PATH}"; exit 1; }
+          /usr/bin/find "${IOS_APP_PATH}" -maxdepth 2 -type f | sed -n '1,40p'
 
           mvn -B -ntp \
             -Dsurefire.suiteXmlFiles=${IOS_SUITE_XML} \
